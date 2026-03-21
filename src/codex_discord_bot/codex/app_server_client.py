@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 from dataclasses import dataclass
 import subprocess
 import threading
@@ -41,7 +42,10 @@ class AppServerClient:
         self._approval_handler = approval_handler or (lambda _method, _params: {})
         self._proc: subprocess.Popen[str] | None = None
         self._write_lock = threading.Lock()
-        self._pending_notifications: list[Notification] = []
+        self._state_lock = threading.Lock()
+        self._pending_requests: dict[str, queue.Queue[dict[str, Any] | BaseException]] = {}
+        self._pending_notifications: queue.Queue[Notification | BaseException] = queue.Queue()
+        self._reader_thread: threading.Thread | None = None
 
     def start(self) -> None:
         if self._proc is not None:
@@ -63,19 +67,35 @@ class AppServerClient:
             env=env,
             bufsize=1,
         )
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop,
+            name="codex-app-server-reader",
+            daemon=True,
+        )
+        self._reader_thread.start()
 
     def close(self) -> None:
         if self._proc is None:
             return
         proc = self._proc
         self._proc = None
-        if proc.stdin:
-            proc.stdin.close()
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+        except Exception:
+            pass
         try:
             proc.terminate()
             proc.wait(timeout=2)
         except Exception:
             proc.kill()
+        finally:
+            self._fail_all_waiters(RuntimeError("app-server 已关闭"))
+
+        reader_thread = self._reader_thread
+        self._reader_thread = None
+        if reader_thread is not None and reader_thread.is_alive():
+            reader_thread.join(timeout=2)
 
     def initialize(self) -> dict[str, Any]:
         result = self.request(
@@ -99,52 +119,35 @@ class AppServerClient:
 
     def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         request_id = str(uuid.uuid4())
-        self._write_message({"id": request_id, "method": method, "params": params or {}})
+        response_queue: queue.Queue[dict[str, Any] | BaseException] = queue.Queue(maxsize=1)
+        with self._state_lock:
+            self._pending_requests[request_id] = response_queue
 
-        while True:
-            msg = self._read_message()
+        try:
+            self._write_message({"id": request_id, "method": method, "params": params or {}})
+        except Exception:
+            with self._state_lock:
+                self._pending_requests.pop(request_id, None)
+            raise
 
-            if "method" in msg and "id" in msg:
-                response = self._approval_handler(
-                    str(msg["method"]),
-                    msg.get("params") if isinstance(msg.get("params"), dict) else None,
-                )
-                self._write_message({"id": msg["id"], "result": response})
-                continue
+        response = response_queue.get()
+        if isinstance(response, BaseException):
+            raise response
 
-            if "method" in msg and "id" not in msg:
-                self._pending_notifications.append(
-                    Notification(method=str(msg["method"]), payload=msg.get("params") or {})
-                )
-                continue
+        error = response.get("error")
+        if isinstance(error, dict):
+            raise RuntimeError(error.get("message", "app-server request failed"))
 
-            if msg.get("id") != request_id:
-                continue
-
-            error = msg.get("error")
-            if isinstance(error, dict):
-                raise RuntimeError(error.get("message", "app-server request failed"))
-
-            result = msg.get("result")
-            if not isinstance(result, dict):
-                raise RuntimeError(f"{method} response must be a JSON object")
-            return result
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError(f"{method} response must be a JSON object")
+        return result
 
     def next_notification(self) -> Notification:
-        if self._pending_notifications:
-            return self._pending_notifications.pop(0)
-
-        while True:
-            msg = self._read_message()
-            if "method" in msg and "id" in msg:
-                response = self._approval_handler(
-                    str(msg["method"]),
-                    msg.get("params") if isinstance(msg.get("params"), dict) else None,
-                )
-                self._write_message({"id": msg["id"], "result": response})
-                continue
-            if "method" in msg and "id" not in msg:
-                return Notification(method=str(msg["method"]), payload=msg.get("params") or {})
+        notification = self._pending_notifications.get()
+        if isinstance(notification, BaseException):
+            raise notification
+        return notification
 
     def thread_start(self, params: dict[str, Any]) -> dict[str, Any]:
         return self.request("thread/start", params)
@@ -172,6 +175,20 @@ class AppServerClient:
             "input": self._normalize_input_items(input_items),
         }
         return self.request("turn/start", payload)
+
+    def turn_steer(
+        self,
+        thread_id: str,
+        input_items: list[dict[str, Any]] | dict[str, Any] | str,
+        *,
+        expected_turn_id: str,
+    ) -> dict[str, Any]:
+        payload = {
+            "threadId": thread_id,
+            "input": self._normalize_input_items(input_items),
+            "expectedTurnId": expected_turn_id,
+        }
+        return self.request("turn/steer", payload)
 
     def turn_interrupt(self, thread_id: str, turn_id: str) -> dict[str, Any]:
         return self.request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
@@ -206,3 +223,55 @@ class AppServerClient:
         if not isinstance(payload, dict):
             raise RuntimeError("invalid JSON-RPC payload")
         return payload
+
+    def _reader_loop(self) -> None:
+        try:
+            while True:
+                msg = self._read_message()
+
+                if "method" in msg and "id" in msg:
+                    self._handle_server_request(msg)
+                    continue
+
+                if "method" in msg and "id" not in msg:
+                    self._pending_notifications.put(
+                        Notification(method=str(msg["method"]), payload=msg.get("params") or {})
+                    )
+                    continue
+
+                request_id = msg.get("id")
+                if request_id is None:
+                    continue
+
+                response_queue = None
+                with self._state_lock:
+                    response_queue = self._pending_requests.pop(str(request_id), None)
+                if response_queue is not None:
+                    response_queue.put(msg)
+        except BaseException as exc:
+            self._fail_all_waiters(exc)
+
+    def _handle_server_request(self, msg: dict[str, Any]) -> None:
+        request_id = msg.get("id")
+        if request_id is None:
+            return
+
+        try:
+            response = self._approval_handler(
+                str(msg["method"]),
+                msg.get("params") if isinstance(msg.get("params"), dict) else None,
+            )
+        except Exception:
+            response = {"decision": "decline"}
+
+        self._write_message({"id": request_id, "result": response})
+
+    def _fail_all_waiters(self, exc: BaseException) -> None:
+        with self._state_lock:
+            pending_requests = list(self._pending_requests.values())
+            self._pending_requests.clear()
+
+        for response_queue in pending_requests:
+            response_queue.put(exc)
+
+        self._pending_notifications.put(exc)

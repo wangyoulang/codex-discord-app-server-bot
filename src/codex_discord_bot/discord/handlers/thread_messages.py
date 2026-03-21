@@ -5,9 +5,9 @@ import asyncio
 import discord
 
 from codex_discord_bot.codex.approvals import ApprovalEnvelope
-from codex_discord_bot.logging import get_logger
-from codex_discord_bot.persistence.enums import SessionStatus
 from codex_discord_bot.discord.views.approvals import ApprovalDecisionView
+from codex_discord_bot.discord.views.session_controls import SessionControlView
+from codex_discord_bot.logging import get_logger
 from codex_discord_bot.utils.text import truncate_text
 
 logger = get_logger(__name__)
@@ -21,20 +21,50 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
     if message.guild is None:
         return
 
-    worker_key = str(message.channel.id)
-    if bot.app_state.worker_pool.is_busy(worker_key):
-        await message.reply(
-            "当前会话已有进行中的请求。第一版骨架暂未启用 `turn/steer`，请等待上一条完成。",
-            mention_author=False,
-        )
-        return
-
     try:
         route = await bot.app_state.session_router.ensure_route_for_thread(message.channel)
     except ValueError:
         return
 
-    status_message = await message.reply("正在调用 Codex...", mention_author=False)
+    worker_key = str(message.channel.id)
+    if bot.app_state.worker_pool.is_busy(worker_key):
+        worker = bot.app_state.worker_pool.get_worker(worker_key)
+        if worker is None or worker.get_active_turn() is None:
+            await message.reply("当前 turn 正在启动，请稍后再次发送消息。", mention_author=False)
+            return
+
+        try:
+            turn_id = await worker.steer_text_turn(message.content)
+        except Exception as exc:
+            logger.exception("thread.message.steer_failed", error=str(exc), thread_id=message.channel.id)
+            await message.reply(
+                "追加到当前进行中的 Codex turn 失败，可能该 turn 已刚结束，请重新发送一条消息。",
+                mention_author=False,
+            )
+            return
+
+        await bot.app_state.session_service.mark_running(
+            discord_thread_id=str(message.channel.id),
+            active_turn_id=turn_id,
+        )
+        await bot.app_state.audit_service.record(
+            action="thread_message_steered",
+            guild_id=str(message.guild.id),
+            discord_thread_id=str(message.channel.id),
+            actor_id=str(message.author.id),
+            payload={"content_length": len(message.content), "turn_id": turn_id},
+        )
+        await message.reply(
+            f"已追加到当前进行中的 Codex turn：`{turn_id}`",
+            mention_author=False,
+        )
+        return
+
+    status_message = await message.reply(
+        "正在调用 Codex...",
+        mention_author=False,
+        view=SessionControlView(bot.app_state),
+    )
     edit_lock = asyncio.Lock()
     streamed_text = ""
 
@@ -43,6 +73,17 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
         streamed_text += delta
         async with edit_lock:
             await status_message.edit(content=truncate_text(streamed_text))
+
+    async def on_turn_started(codex_thread_id: str, turn_id: str) -> None:
+        await bot.app_state.session_service.bind_codex_thread(
+            discord_thread_id=str(message.channel.id),
+            codex_thread_id=codex_thread_id,
+        )
+        await bot.app_state.session_service.mark_running(
+            discord_thread_id=str(message.channel.id),
+            active_turn_id=turn_id,
+            last_bot_message_id=str(status_message.id),
+        )
 
     async def on_approval_request(envelope: ApprovalEnvelope) -> dict:
         pending = await bot.app_state.approval_service.register_request(
@@ -106,19 +147,19 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
         payload={"content_length": len(message.content)},
     )
 
-    await bot.app_state.session_service.update_status(
+    await bot.app_state.session_service.mark_running(
         discord_thread_id=str(message.channel.id),
-        status=SessionStatus.running,
         last_bot_message_id=str(status_message.id),
     )
 
     try:
         async with bot.app_state.worker_pool.lease(worker_key) as worker:
-            codex_thread_id, turn_id, reply_text = await worker.run_streamed_text_turn(
+            codex_thread_id, _turn_id, reply_text = await worker.run_streamed_text_turn(
                 route.session,
                 route.workspace,
                 message.content,
                 on_delta=on_delta,
+                on_turn_started=on_turn_started,
                 on_approval_request=on_approval_request,
             )
 
@@ -126,18 +167,15 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
             discord_thread_id=str(message.channel.id),
             codex_thread_id=codex_thread_id,
         )
-        await bot.app_state.session_service.update_status(
+        await bot.app_state.session_service.mark_ready(
             discord_thread_id=str(message.channel.id),
-            status=SessionStatus.ready,
-            active_turn_id=turn_id,
             last_bot_message_id=str(status_message.id),
         )
         await status_message.edit(content=truncate_text(reply_text))
     except Exception as exc:
         logger.exception("thread.message.failed", error=str(exc), thread_id=message.channel.id)
-        await bot.app_state.session_service.update_status(
+        await bot.app_state.session_service.mark_error(
             discord_thread_id=str(message.channel.id),
-            status=SessionStatus.error,
             last_bot_message_id=str(status_message.id),
         )
         await status_message.edit(content=f"Codex 执行失败：{exc}")

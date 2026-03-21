@@ -17,7 +17,14 @@ from codex_discord_bot.persistence.models import Workspace
 class ExecutionCallbacks:
     loop: asyncio.AbstractEventLoop
     on_delta: object
+    on_turn_started: object
     on_approval_request: object
+
+
+@dataclass(slots=True)
+class ActiveTurn:
+    thread_id: str
+    turn_id: str
 
 
 class CodexWorker:
@@ -26,7 +33,9 @@ class CodexWorker:
         self.worker_key = worker_key
         self._client: AppServerClient | None = None
         self._client_lock = threading.Lock()
+        self._state_lock = threading.Lock()
         self._active_callbacks: ExecutionCallbacks | None = None
+        self._active_turn: ActiveTurn | None = None
         self._thread_cache: dict[str, str] = {}
 
     async def start(self) -> None:
@@ -67,6 +76,27 @@ class CodexWorker:
             callbacks.loop,
         )
         return future.result()
+
+    def get_active_turn(self) -> ActiveTurn | None:
+        with self._state_lock:
+            if self._active_turn is None:
+                return None
+            return ActiveTurn(
+                thread_id=self._active_turn.thread_id,
+                turn_id=self._active_turn.turn_id,
+            )
+
+    def _set_active_turn(self, thread_id: str, turn_id: str) -> None:
+        with self._state_lock:
+            self._active_turn = ActiveTurn(thread_id=thread_id, turn_id=turn_id)
+
+    def _clear_active_turn(self, thread_id: str, turn_id: str) -> None:
+        with self._state_lock:
+            if self._active_turn is None:
+                return
+            if self._active_turn.thread_id != thread_id or self._active_turn.turn_id != turn_id:
+                return
+            self._active_turn = None
 
     def _ensure_thread_sync(
         self,
@@ -154,6 +184,13 @@ class CodexWorker:
             turn_id = started_turn.get("id")
             if not isinstance(turn_id, str) or not turn_id:
                 raise RuntimeError("turn/start 响应缺少 turn.id")
+            self._set_active_turn(thread_id, turn_id)
+
+            future = asyncio.run_coroutine_threadsafe(
+                callbacks.on_turn_started(thread_id, turn_id),
+                callbacks.loop,
+            )
+            future.result()
 
             while True:
                 notification = self._client.next_notification()
@@ -191,6 +228,9 @@ class CodexWorker:
             ).strip() or "[Codex 未返回文本结果]"
             return thread_id, turn_id, final_text
         finally:
+            active_turn = self.get_active_turn()
+            if active_turn is not None:
+                self._clear_active_turn(active_turn.thread_id, active_turn.turn_id)
             self._active_callbacks = None
 
     async def run_streamed_text_turn(
@@ -200,11 +240,13 @@ class CodexWorker:
         text: str,
         *,
         on_delta,
+        on_turn_started,
         on_approval_request,
     ) -> tuple[str, str, str]:
         callbacks = ExecutionCallbacks(
             loop=asyncio.get_running_loop(),
             on_delta=on_delta,
+            on_turn_started=on_turn_started,
             on_approval_request=on_approval_request,
         )
         return await asyncio.to_thread(
@@ -214,3 +256,36 @@ class CodexWorker:
             text,
             callbacks,
         )
+
+    def _steer_text_turn_sync(self, text: str) -> str:
+        active_turn = self.get_active_turn()
+        if active_turn is None:
+            raise RuntimeError("当前没有运行中的 turn")
+
+        self._ensure_client_sync()
+        assert self._client is not None
+        response = self._client.turn_steer(
+            active_turn.thread_id,
+            text,
+            expected_turn_id=active_turn.turn_id,
+        )
+        turn_id = response.get("turnId")
+        if isinstance(turn_id, str) and turn_id:
+            return turn_id
+        return active_turn.turn_id
+
+    async def steer_text_turn(self, text: str) -> str:
+        return await asyncio.to_thread(self._steer_text_turn_sync, text)
+
+    def _interrupt_active_turn_sync(self) -> str | None:
+        active_turn = self.get_active_turn()
+        if active_turn is None:
+            return None
+
+        self._ensure_client_sync()
+        assert self._client is not None
+        self._client.turn_interrupt(active_turn.thread_id, active_turn.turn_id)
+        return active_turn.turn_id
+
+    async def interrupt_active_turn(self) -> str | None:
+        return await asyncio.to_thread(self._interrupt_active_turn_sync)

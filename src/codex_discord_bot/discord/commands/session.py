@@ -47,12 +47,17 @@ def build_group(app_state) -> app_commands.Group:
             return
 
         worker_active = app_state.worker_pool.has_worker(str(interaction.channel.id))
+        worker = app_state.worker_pool.get_worker(str(interaction.channel.id))
+        live_active_turn = worker.get_active_turn() if worker is not None else None
         await interaction.response.send_message(
             "\n".join(
                 [
                     f"discord_thread_id: `{session.discord_thread_id}`",
                     f"codex_thread_id: `{session.codex_thread_id or '未创建'}`",
                     f"status: `{session.status.value}`",
+                    f"active_turn_id: `{session.active_turn_id or '无'}`",
+                    f"live_active_turn_id: `{live_active_turn.turn_id if live_active_turn is not None else '无'}`",
+                    f"last_bot_message_id: `{session.last_bot_message_id or '无'}`",
                     f"worker_active: `{worker_active}`",
                 ]
             ),

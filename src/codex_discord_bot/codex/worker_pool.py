@@ -51,6 +51,12 @@ class WorkerPool:
     def has_worker(self, worker_key: str) -> bool:
         return worker_key in self._entries
 
+    def get_worker(self, worker_key: str) -> CodexWorker | None:
+        entry = self._entries.get(worker_key)
+        if entry is None:
+            return None
+        return entry.worker
+
     async def reap_idle_workers(self) -> int:
         cutoff_seconds = self.settings.worker_idle_timeout_seconds
         now = utc_now()

@@ -46,11 +46,10 @@ class SessionService:
                 raise ValueError("会话不存在，无法绑定 Codex thread")
             return await repo.update_codex_thread_id(record, codex_thread_id=codex_thread_id)
 
-    async def update_status(
+    async def mark_running(
         self,
         *,
         discord_thread_id: str,
-        status: SessionStatus,
         active_turn_id: str | None = None,
         last_bot_message_id: str | None = None,
     ) -> DiscordSession:
@@ -61,7 +60,43 @@ class SessionService:
                 raise ValueError("会话不存在，无法更新状态")
             return await repo.update_status(
                 record,
-                status=status,
+                status=SessionStatus.running,
                 active_turn_id=active_turn_id,
+                last_bot_message_id=last_bot_message_id,
+            )
+
+    async def mark_ready(
+        self,
+        *,
+        discord_thread_id: str,
+        last_bot_message_id: str | None = None,
+    ) -> DiscordSession:
+        async with self.db.session() as session:
+            repo = DiscordSessionRepository(session)
+            record = await repo.get_by_discord_thread_id(discord_thread_id)
+            if record is None:
+                raise ValueError("会话不存在，无法更新状态")
+            return await repo.update_status(
+                record,
+                status=SessionStatus.ready,
+                active_turn_id=None,
+                last_bot_message_id=last_bot_message_id,
+            )
+
+    async def mark_error(
+        self,
+        *,
+        discord_thread_id: str,
+        last_bot_message_id: str | None = None,
+    ) -> DiscordSession:
+        async with self.db.session() as session:
+            repo = DiscordSessionRepository(session)
+            record = await repo.get_by_discord_thread_id(discord_thread_id)
+            if record is None:
+                raise ValueError("会话不存在，无法更新状态")
+            return await repo.update_status(
+                record,
+                status=SessionStatus.error,
+                active_turn_id=None,
                 last_bot_message_id=last_bot_message_id,
             )

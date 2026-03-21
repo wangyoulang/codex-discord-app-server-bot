@@ -20,11 +20,12 @@ class CodexDiscordBot(commands.Bot):
             application_id=app_state.settings.discord_application_id,
         )
         self.app_state = app_state
+        self.session_control_view = SessionControlView(self.app_state)
         self._closed = False
 
     async def setup_hook(self) -> None:
         register_commands(self)
-        self.add_view(SessionControlView(self.app_state))
+        self.add_view(self.session_control_view)
         task = self.loop.create_task(run_idle_worker_reaper(self.app_state))
         self.app_state.background_tasks.append(task)
 
