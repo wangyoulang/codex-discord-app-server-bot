@@ -1,0 +1,5 @@
+APP_NAME = "codex-discord-app-server-bot"
+ROOT_COMMAND_NAME = "codex"
+ROOT_COMMAND_DESCRIPTION = "Codex Discord 协作机器人"
+APPROVAL_VIEW_PREFIX = "approval"
+SESSION_VIEW_PREFIX = "session"

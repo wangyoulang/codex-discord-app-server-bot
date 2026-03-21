@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codex-discord-app-server-bot"
+version = "0.1.0"
+description = "Discord bot skeleton for Codex app-server"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "wangyoulang" }]
+dependencies = [
+  "alembic>=1.16",
+  "aiosqlite>=0.21",
+  "codex-app-server-sdk>=0.2.0",
+  "discord.py>=2.7,<3",
+  "pydantic>=2.12",
+  "pydantic-settings>=2.10",
+  "SQLAlchemy>=2.0",
+  "structlog>=25.4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4",
+  "ruff>=0.12",
+]
+
+[project.scripts]
+codex-discord-bot = "codex_discord_bot.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codex_discord_bot"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
