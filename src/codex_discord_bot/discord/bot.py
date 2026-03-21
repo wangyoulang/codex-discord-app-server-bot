@@ -18,6 +18,7 @@ class CodexDiscordBot(commands.Bot):
             command_prefix=commands.when_mentioned,
             intents=build_intents(),
             application_id=app_state.settings.discord_application_id,
+            proxy=app_state.settings.discord_proxy_url,
         )
         self.app_state = app_state
         self.session_control_view = SessionControlView(self.app_state)

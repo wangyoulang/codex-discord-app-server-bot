@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     discord_application_id: int | None = None
     discord_guild_id: int | None = None
     discord_sync_guild_commands: bool = True
+    discord_proxy_url: str | None = None
 
     database_url: str = "sqlite+aiosqlite:///./state/app.db"
     state_dir: Path = Path("./state")
