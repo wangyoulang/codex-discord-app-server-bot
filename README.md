@@ -2,27 +2,43 @@
 
 基于 `Discord + Codex app-server` 的机器人方案仓库。
 
-当前仓库阶段：
+当前仓库能力：
 
-- 已包含第一版项目骨架
-- 已包含数据库模型、迁移、Discord 命令框架和 Codex worker 骨架
-- 已包含最小可用闭环：工作区注册、会话初始化、线程消息触发最小 `run()` 调用
-- 目标是以 `Discord` 作为交互前端，以 `codex app-server` 作为 Codex 原生后端接口
+- 已支持工作区注册、会话初始化、线程内流式输出
+- 已支持运行中 turn 的 `turn/steer`
+- 已支持运行中 turn 的 `turn/interrupt`
+- 已支持复用本地 `codex` CLI、自身 `config.toml` 和项目 `AGENTS.md`
 
 文档入口：
 
 - [Discord + Codex app-server 方案设计](./docs/discord-codex-app-server-design.md)
+
+运行原则：
+
+- bot 只负责把 Discord 论坛频道绑定到本地项目目录
+- Codex 行为配置由你本机已有的 `codex` 配置接管
+- 只要 `/codex project add` 传入的是项目根目录，Codex 会按原生机制读取该项目的 `AGENTS.md`
 
 建议启动方式：
 
 ```bash
 uv sync
 cp .env.example .env
+uv run alembic upgrade head
 uv run python scripts/register_commands.py
 uv run python scripts/dev.py
 ```
 
-当前已落文件层次：
+使用说明：
+
+1. 在 `.env` 里配置 Discord token 和 application id。
+2. 可选设置 `CODEX_HOME`；不设置时会直接复用当前机器上 `codex` 默认使用的 home 和 `config.toml`。
+3. 在 Discord 服务器里执行 `/codex project add`，把论坛频道绑定到项目根目录。
+4. 在该论坛频道中新建线程，执行 `/codex session new`。
+5. 直接在论坛线程里发消息即可。
+6. 如果 Codex 正在执行，再发新消息会走 `turn/steer`；需要停止时可以点击“打断”按钮。
+
+目录结构：
 
 - `src/codex_discord_bot/discord/`：Discord bot、命令、视图、消息处理
 - `src/codex_discord_bot/codex/`：Codex worker、worker pool、会话路由
@@ -33,12 +49,12 @@ uv run python scripts/dev.py
 
 当前功能边界：
 
-- 已支持：工作区注册、会话初始化、线程内文本消息触发最小 `thread/run()` 调用
-- 未支持：真正的流式 delta 渲染、`turn/steer`、审批按钮回写、附件输入、`review/start`
+- 已支持：工作区注册、会话初始化、流式消息渲染、`turn/steer`、`turn/interrupt`
+- 未支持：附件输入、`review/start`
 
 设计目标：
 
 - 在 Discord 中以线程形式承载 Codex 会话
 - 保留 Codex 原生 `thread / turn / item` 能力
-- 支持流式输出、审批、恢复、审计与权限隔离
+- 支持流式输出、恢复、审计与权限隔离
 - 避免引入额外 ACP/OpenClaw 网关层带来的能力折损

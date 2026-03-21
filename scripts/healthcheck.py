@@ -19,6 +19,7 @@ def main() -> None:
         "discord_token_configured": bool(settings.discord_bot_token),
         "codex_bin": settings.codex_bin or "codex",
         "codex_bin_found": shutil.which(settings.codex_bin or "codex") is not None,
+        "codex_home_override": str(settings.codex_home) if settings.codex_home is not None else None,
         "database_url": settings.database_url,
         "state_dir": str(settings.state_dir),
         "artifact_dir": str(settings.artifact_dir),

@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        env_ignore_empty=True,
         extra="ignore",
     )
 
@@ -29,19 +30,15 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     codex_bin: str | None = None
-    codex_home: Path = Path("./runtime/codex-home")
-    codex_model: str = "gpt-5.4"
-    codex_reasoning_effort: str = "high"
-    codex_sandbox_mode: str = "workspace-write"
-    codex_approval_policy: str = "on-request"
-    codex_service_tier: str = "fast"
-    codex_default_personality: str = "pragmatic"
+    codex_home: Path | None = None
 
     worker_idle_timeout_seconds: int = 900
 
     def ensure_runtime_dirs(self) -> None:
-        for path in (self.state_dir, self.artifact_dir, self.log_dir, self.codex_home):
+        for path in (self.state_dir, self.artifact_dir, self.log_dir):
             path.mkdir(parents=True, exist_ok=True)
+        if self.codex_home is not None:
+            self.codex_home.mkdir(parents=True, exist_ok=True)
 
 
 def load_settings() -> Settings:

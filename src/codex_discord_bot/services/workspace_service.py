@@ -16,10 +16,6 @@ class WorkspaceService:
         forum_channel_id: str,
         name: str,
         cwd: str,
-        default_model: str,
-        default_reasoning_effort: str,
-        sandbox_mode: str,
-        approval_policy: str,
     ) -> Workspace:
         async with self.db.session() as session:
             repo = WorkspaceRepository(session)
@@ -32,10 +28,6 @@ class WorkspaceService:
                 forum_channel_id=forum_channel_id,
                 name=name,
                 cwd=cwd,
-                default_model=default_model,
-                default_reasoning_effort=default_reasoning_effort,
-                sandbox_mode=sandbox_mode,
-                approval_policy=approval_policy,
             )
             return await repo.create(workspace)
 

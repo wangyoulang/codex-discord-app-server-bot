@@ -114,11 +114,6 @@ class CodexWorker:
                 session.codex_thread_id,
                 {
                     "cwd": workspace.cwd,
-                    "model": workspace.default_model,
-                    "approvalPolicy": workspace.approval_policy,
-                    "sandbox": workspace.sandbox_mode,
-                    "personality": self.settings.codex_default_personality,
-                    "serviceTier": self.settings.codex_service_tier,
                 },
             )
             thread = response.get("thread")
@@ -133,11 +128,6 @@ class CodexWorker:
         response = self._client.thread_start(
             {
                 "cwd": workspace.cwd,
-                "model": workspace.default_model,
-                "approvalPolicy": workspace.approval_policy,
-                "sandbox": workspace.sandbox_mode,
-                "personality": self.settings.codex_default_personality,
-                "serviceTier": self.settings.codex_service_tier,
             }
         )
         thread = response.get("thread")
@@ -168,15 +158,7 @@ class CodexWorker:
             thread_id = self._ensure_thread_sync(session, workspace)
             assert self._client is not None
 
-            params = {
-                "approvalPolicy": workspace.approval_policy,
-                "cwd": workspace.cwd,
-                "effort": workspace.default_reasoning_effort,
-                "model": workspace.default_model,
-                "personality": self.settings.codex_default_personality,
-                "sandboxPolicy": {"type": "workspaceWrite", "networkAccess": False},
-                "serviceTier": self.settings.codex_service_tier,
-            }
+            params = {"cwd": workspace.cwd}
             started = self._client.turn_start(thread_id, text, params=params)
             started_turn = started.get("turn")
             if not isinstance(started_turn, dict):

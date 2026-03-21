@@ -8,7 +8,8 @@ from codex_discord_bot.config import Settings
 
 def build_codex_config(settings: Settings, *, cwd: str | None = None) -> AppServerConfig:
     env = os.environ.copy()
-    env["CODEX_HOME"] = str(settings.codex_home)
+    if settings.codex_home is not None:
+        env["CODEX_HOME"] = str(settings.codex_home)
     return AppServerConfig(
         codex_bin=settings.codex_bin,
         cwd=cwd,

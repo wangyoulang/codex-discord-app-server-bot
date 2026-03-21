@@ -30,10 +30,6 @@ class Workspace(Base):
     forum_channel_id: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     cwd: Mapped[str] = mapped_column(Text, nullable=False)
-    default_model: Mapped[str] = mapped_column(String(120), nullable=False)
-    default_reasoning_effort: Mapped[str] = mapped_column(String(32), nullable=False)
-    sandbox_mode: Mapped[str] = mapped_column(String(32), nullable=False)
-    approval_policy: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[Any] = mapped_column(
         DateTime(timezone=True),

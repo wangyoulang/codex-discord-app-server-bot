@@ -30,10 +30,6 @@ def test_session_service_tracks_active_turn_lifecycle(tmp_path: Path) -> None:
                     forum_channel_id="forum_1",
                     name="demo",
                     cwd="/repo",
-                    default_model="gpt-5.4",
-                    default_reasoning_effort="high",
-                    sandbox_mode="workspace-write",
-                    approval_policy="never",
                 )
             )
 

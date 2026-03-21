@@ -12,16 +12,14 @@ def build_group(app_state) -> app_commands.Group:
     @group.command(name="add", description="注册论坛频道为工作区")
     @app_commands.describe(
         name="工作区名称",
-        cwd="本地代码目录绝对路径",
+        cwd="项目根目录绝对路径，建议为包含 AGENTS.md 的仓库根目录",
         forum_channel="绑定到该工作区的论坛频道",
-        model="默认模型，例如 gpt-5.4",
     )
     async def add(
         interaction: discord.Interaction,
         name: str,
         cwd: str,
         forum_channel: discord.ForumChannel,
-        model: str | None = None,
     ) -> None:
         if interaction.guild is None:
             await send_interaction_error(interaction, "该命令只能在服务器内使用。")
@@ -33,10 +31,6 @@ def build_group(app_state) -> app_commands.Group:
                 forum_channel_id=str(forum_channel.id),
                 name=name,
                 cwd=cwd,
-                default_model=model or app_state.settings.codex_model,
-                default_reasoning_effort=app_state.settings.codex_reasoning_effort,
-                sandbox_mode=app_state.settings.codex_sandbox_mode,
-                approval_policy=app_state.settings.codex_approval_policy,
             )
             await app_state.audit_service.record(
                 action="workspace_created",
