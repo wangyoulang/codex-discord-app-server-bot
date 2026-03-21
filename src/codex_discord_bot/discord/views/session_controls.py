@@ -5,7 +5,7 @@ import discord
 
 class SessionControlView(discord.ui.View):
     def __init__(self, app_state: object) -> None:
-        super().__init__(timeout=None)
+        super().__init__(timeout=900)
         self.app_state = app_state
 
     @discord.ui.button(label="状态", style=discord.ButtonStyle.secondary, custom_id="session:status")

@@ -13,7 +13,6 @@ authors = [{ name = "wangyoulang" }]
 dependencies = [
   "alembic>=1.16",
   "aiosqlite>=0.21",
-  "codex-app-server-sdk>=0.2.0",
   "discord.py>=2.7,<3",
   "pydantic>=2.12",
   "pydantic-settings>=2.10",
@@ -24,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.4",
+  "pytest-cov>=6.2",
   "ruff>=0.12",
 ]
 

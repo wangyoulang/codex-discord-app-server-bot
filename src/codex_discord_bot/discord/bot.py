@@ -4,9 +4,7 @@ import discord
 from discord.ext import commands
 
 from codex_discord_bot.discord.command_tree import register_commands
-from codex_discord_bot.discord.handlers.thread_messages import handle_thread_message
 from codex_discord_bot.discord.intents import build_intents
-from codex_discord_bot.discord.views.approvals import ApprovalDecisionView
 from codex_discord_bot.discord.views.session_controls import SessionControlView
 from codex_discord_bot.logging import get_logger
 from codex_discord_bot.runtime.background_tasks import run_idle_worker_reaper
@@ -26,7 +24,6 @@ class CodexDiscordBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         register_commands(self)
-        self.add_view(ApprovalDecisionView(self.app_state))
         self.add_view(SessionControlView(self.app_state))
         task = self.loop.create_task(run_idle_worker_reaper(self.app_state))
         self.app_state.background_tasks.append(task)
@@ -46,6 +43,8 @@ class CodexDiscordBot(commands.Bot):
         )
 
     async def on_message(self, message: discord.Message) -> None:
+        from codex_discord_bot.discord.handlers.thread_messages import handle_thread_message
+
         await handle_thread_message(self, message)
 
     async def close(self) -> None:

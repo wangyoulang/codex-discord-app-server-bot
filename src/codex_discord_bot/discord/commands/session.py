@@ -18,10 +18,10 @@ def build_group(app_state) -> app_commands.Group:
         try:
             route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
             async with app_state.worker_pool.lease(str(interaction.channel.id)) as worker:
-                codex_thread = await worker.ensure_thread(route.session, route.workspace)
+                codex_thread_id = await worker.ensure_thread(route.session, route.workspace)
             await app_state.session_service.bind_codex_thread(
                 discord_thread_id=str(interaction.channel.id),
-                codex_thread_id=codex_thread.id,
+                codex_thread_id=codex_thread_id,
             )
         except ValueError as exc:
             await send_interaction_error(interaction, str(exc))
@@ -31,7 +31,7 @@ def build_group(app_state) -> app_commands.Group:
             return
 
         await interaction.response.send_message(
-            f"Codex 会话已准备：`{codex_thread.id}`",
+            f"Codex 会话已准备：`{codex_thread_id}`",
             ephemeral=True,
         )
 

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+
 import discord
 
+from codex_discord_bot.codex.approvals import ApprovalEnvelope
 from codex_discord_bot.logging import get_logger
 from codex_discord_bot.persistence.enums import SessionStatus
+from codex_discord_bot.discord.views.approvals import ApprovalDecisionView
 from codex_discord_bot.utils.text import truncate_text
 
 logger = get_logger(__name__)
@@ -31,6 +35,68 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
         return
 
     status_message = await message.reply("正在调用 Codex...", mention_author=False)
+    edit_lock = asyncio.Lock()
+    streamed_text = ""
+
+    async def on_delta(delta: str) -> None:
+        nonlocal streamed_text
+        streamed_text += delta
+        async with edit_lock:
+            await status_message.edit(content=truncate_text(streamed_text))
+
+    async def on_approval_request(envelope: ApprovalEnvelope) -> dict:
+        pending = await bot.app_state.approval_service.register_request(
+            local_request_id=envelope.local_request_id,
+            request_type=envelope.request_type,
+            title=envelope.title,
+            body=envelope.body,
+            decisions=envelope.decisions,
+            response_payloads=envelope.response_payloads,
+            requester_id=str(message.author.id),
+            thread_id=str(message.channel.id),
+            turn_id=envelope.turn_id,
+            item_id=envelope.item_id,
+        )
+        approval_message = await message.channel.send(
+            f"**{pending.title}**\n{pending.body}",
+            view=ApprovalDecisionView(
+                bot.app_state,
+                local_request_id=pending.local_request_id,
+                decisions=pending.decisions,
+            ),
+        )
+        await bot.app_state.approval_service.set_message_id(
+            pending.local_request_id,
+            str(approval_message.id),
+        )
+
+        try:
+            result = await bot.app_state.approval_service.wait_for_decision(
+                pending.local_request_id,
+                timeout_seconds=900,
+            )
+            await bot.app_state.audit_service.record(
+                action="approval_resolved",
+                guild_id=str(message.guild.id),
+                discord_thread_id=str(message.channel.id),
+                actor_id=result.get("actor_id"),
+                payload={
+                    "local_request_id": pending.local_request_id,
+                    "decision": result.get("decision"),
+                },
+            )
+            response = result.get("response")
+            if not isinstance(response, dict):
+                return {"decision": "decline"}
+            return response
+        except TimeoutError:
+            await approval_message.edit(
+                content=f"{approval_message.content}\n\n审批超时，已自动取消。",
+                view=None,
+            )
+            return {"decision": "cancel"}
+        finally:
+            await bot.app_state.approval_service.cleanup_request(pending.local_request_id)
 
     await bot.app_state.audit_service.record(
         action="thread_message_received",
@@ -48,10 +114,12 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
 
     try:
         async with bot.app_state.worker_pool.lease(worker_key) as worker:
-            codex_thread_id, reply_text = await worker.run_text_turn(
+            codex_thread_id, turn_id, reply_text = await worker.run_streamed_text_turn(
                 route.session,
                 route.workspace,
                 message.content,
+                on_delta=on_delta,
+                on_approval_request=on_approval_request,
             )
 
         await bot.app_state.session_service.bind_codex_thread(
@@ -61,6 +129,7 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
         await bot.app_state.session_service.update_status(
             discord_thread_id=str(message.channel.id),
             status=SessionStatus.ready,
+            active_turn_id=turn_id,
             last_bot_message_id=str(status_message.id),
         )
         await status_message.edit(content=truncate_text(reply_text))
