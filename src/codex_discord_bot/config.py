@@ -35,6 +35,17 @@ class Settings(BaseSettings):
 
     worker_idle_timeout_seconds: int = 900
 
+    discord_preview_mode: Literal["off", "partial", "block"] = "off"
+    discord_preview_throttle_ms: int = 1200
+    discord_preview_min_initial_chars: int = 30
+    discord_block_preview_min_chars: int = 200
+    discord_block_preview_max_chars: int = 800
+    discord_block_preview_break_preference: Literal["paragraph", "newline", "sentence"] = (
+        "paragraph"
+    )
+    discord_final_max_lines_per_message: int = 17
+    discord_reply_to_mode: Literal["none", "first", "all"] = "first"
+
     def ensure_runtime_dirs(self) -> None:
         for path in (self.state_dir, self.artifact_dir, self.log_dir):
             path.mkdir(parents=True, exist_ok=True)

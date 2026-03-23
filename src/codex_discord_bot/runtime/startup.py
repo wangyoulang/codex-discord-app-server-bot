@@ -11,6 +11,7 @@ from codex_discord_bot.services.artifact_service import ArtifactService
 from codex_discord_bot.services.audit_service import AuditService
 from codex_discord_bot.services.review_service import ReviewService
 from codex_discord_bot.services.session_service import SessionService
+from codex_discord_bot.services.turn_output_service import TurnOutputService
 from codex_discord_bot.services.workspace_service import WorkspaceService
 
 
@@ -20,6 +21,7 @@ class ApplicationContext:
     db: Database
     workspace_service: WorkspaceService
     session_service: SessionService
+    turn_output_service: TurnOutputService
     approval_service: ApprovalService
     review_service: ReviewService
     artifact_service: ArtifactService
@@ -59,6 +61,7 @@ async def build_application_context() -> ApplicationContext:
         db=db,
         workspace_service=WorkspaceService(db),
         session_service=SessionService(db),
+        turn_output_service=TurnOutputService(db),
         approval_service=ApprovalService(db),
         review_service=ReviewService(),
         artifact_service=ArtifactService(settings.artifact_dir),

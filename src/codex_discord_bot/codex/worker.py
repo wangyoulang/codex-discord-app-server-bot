@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from dataclasses import field
 import threading
 
 from codex_discord_bot.codex.approvals import build_approval_envelope
 from codex_discord_bot.codex.app_server_client import AppServerClient
 from codex_discord_bot.codex.client_factory import build_codex_config
+from codex_discord_bot.codex.stream_events import AgentMessageDeltaEvent
+from codex_discord_bot.codex.stream_events import CodexStreamEvent
+from codex_discord_bot.codex.stream_events import ItemCompletedEvent
+from codex_discord_bot.codex.stream_events import ItemStartedEvent
+from codex_discord_bot.codex.stream_events import TurnCompletedEvent
+from codex_discord_bot.codex.stream_events import TurnStartedEvent
+from codex_discord_bot.codex.stream_renderer import AssistantMessageSnapshot
+from codex_discord_bot.codex.stream_renderer import assistant_messages_from_items
 from codex_discord_bot.codex.stream_renderer import assistant_text_from_items
 from codex_discord_bot.config import Settings
 from codex_discord_bot.persistence.models import DiscordSession
@@ -16,8 +25,7 @@ from codex_discord_bot.persistence.models import Workspace
 @dataclass(slots=True)
 class ExecutionCallbacks:
     loop: asyncio.AbstractEventLoop
-    on_delta: object
-    on_turn_started: object
+    on_event: object
     on_approval_request: object
 
 
@@ -25,6 +33,16 @@ class ExecutionCallbacks:
 class ActiveTurn:
     thread_id: str
     turn_id: str
+
+
+@dataclass(slots=True)
+class TurnRunResult:
+    thread_id: str
+    turn_id: str
+    final_text: str
+    turn_status: str
+    error_message: str | None = None
+    assistant_messages: list[AssistantMessageSnapshot] = field(default_factory=list)
 
 
 class CodexWorker:
@@ -152,7 +170,7 @@ class CodexWorker:
         workspace: Workspace,
         text: str,
         callbacks: ExecutionCallbacks,
-    ) -> tuple[str, str, str]:
+    ) -> TurnRunResult:
         self._active_callbacks = callbacks
         try:
             thread_id = self._ensure_thread_sync(session, workspace)
@@ -168,26 +186,49 @@ class CodexWorker:
                 raise RuntimeError("turn/start 响应缺少 turn.id")
             self._set_active_turn(thread_id, turn_id)
 
-            future = asyncio.run_coroutine_threadsafe(
-                callbacks.on_turn_started(thread_id, turn_id),
-                callbacks.loop,
-            )
-            future.result()
+            completed_status = "completed"
+            completed_error_message: str | None = None
 
             while True:
                 notification = self._client.next_notification()
                 payload = notification.payload
+                if notification.method == "turn/started":
+                    turn_payload = payload.get("turn")
+                    if isinstance(turn_payload, dict) and turn_payload.get("id") == turn_id:
+                        self._emit_stream_event(
+                            callbacks,
+                            TurnStartedEvent(thread_id=thread_id, turn_id=turn_id),
+                        )
+                    continue
+
+                if notification.method == "item/started" and payload.get("turnId") == turn_id:
+                    item_event = self._build_item_event(payload, event_type="started")
+                    if item_event is not None:
+                        self._emit_stream_event(callbacks, item_event)
+                    continue
+
                 if (
                     notification.method == "item/agentMessage/delta"
                     and payload.get("turnId") == turn_id
                 ):
                     delta = payload.get("delta")
+                    item_id = payload.get("itemId")
                     if isinstance(delta, str) and delta:
-                        future = asyncio.run_coroutine_threadsafe(
-                            callbacks.on_delta(delta),
-                            callbacks.loop,
+                        self._emit_stream_event(
+                            callbacks,
+                            AgentMessageDeltaEvent(
+                                thread_id=thread_id,
+                                turn_id=turn_id,
+                                item_id=str(item_id or ""),
+                                delta=delta,
+                            ),
                         )
-                        future.result()
+                    continue
+
+                if notification.method == "item/completed" and payload.get("turnId") == turn_id:
+                    item_event = self._build_item_event(payload, event_type="completed")
+                    if item_event is not None:
+                        self._emit_stream_event(callbacks, item_event)
                     continue
 
                 if (
@@ -195,6 +236,24 @@ class CodexWorker:
                     and isinstance(payload.get("turn"), dict)
                     and payload["turn"].get("id") == turn_id
                 ):
+                    turn_payload = payload["turn"]
+                    status = turn_payload.get("status")
+                    if isinstance(status, str) and status:
+                        completed_status = status
+                    error = turn_payload.get("error")
+                    if isinstance(error, dict):
+                        message = error.get("message")
+                        if isinstance(message, str) and message:
+                            completed_error_message = message
+                    self._emit_stream_event(
+                        callbacks,
+                        TurnCompletedEvent(
+                            thread_id=thread_id,
+                            turn_id=turn_id,
+                            status=completed_status,
+                            error_message=completed_error_message,
+                        ),
+                    )
                     break
 
             thread_snapshot = self._client.thread_read(thread_id, include_turns=True)
@@ -205,15 +264,68 @@ class CodexWorker:
                     persisted_turn = turn
                     break
 
+            assistant_messages = assistant_messages_from_items(
+                persisted_turn.get("items") if isinstance(persisted_turn, dict) else None
+            )
             final_text = assistant_text_from_items(
                 persisted_turn.get("items") if isinstance(persisted_turn, dict) else None
             ).strip() or "[Codex 未返回文本结果]"
-            return thread_id, turn_id, final_text
+            return TurnRunResult(
+                thread_id=thread_id,
+                turn_id=turn_id,
+                final_text=final_text,
+                turn_status=completed_status,
+                error_message=completed_error_message,
+                assistant_messages=assistant_messages,
+            )
         finally:
             active_turn = self.get_active_turn()
             if active_turn is not None:
                 self._clear_active_turn(active_turn.thread_id, active_turn.turn_id)
             self._active_callbacks = None
+
+    def _emit_stream_event(
+        self,
+        callbacks: ExecutionCallbacks,
+        event: CodexStreamEvent,
+    ) -> None:
+        future = asyncio.run_coroutine_threadsafe(
+            callbacks.on_event(event),
+            callbacks.loop,
+        )
+        future.result()
+
+    def _build_item_event(
+        self,
+        payload: dict,
+        *,
+        event_type: str,
+    ) -> ItemStartedEvent | ItemCompletedEvent | None:
+        raw_item = payload.get("item")
+        if not isinstance(raw_item, dict):
+            return None
+        item_id = raw_item.get("id")
+        item_type = raw_item.get("type")
+        thread_id = payload.get("threadId")
+        turn_id = payload.get("turnId")
+        if not all(isinstance(value, str) and value for value in (item_id, item_type, thread_id, turn_id)):
+            return None
+
+        if event_type == "started":
+            return ItemStartedEvent(
+                thread_id=thread_id,
+                turn_id=turn_id,
+                item_id=item_id,
+                item_type=item_type,
+                item=raw_item,
+            )
+        return ItemCompletedEvent(
+            thread_id=thread_id,
+            turn_id=turn_id,
+            item_id=item_id,
+            item_type=item_type,
+            item=raw_item,
+        )
 
     async def run_streamed_text_turn(
         self,
@@ -221,14 +333,12 @@ class CodexWorker:
         workspace: Workspace,
         text: str,
         *,
-        on_delta,
-        on_turn_started,
+        on_event,
         on_approval_request,
-    ) -> tuple[str, str, str]:
+    ) -> TurnRunResult:
         callbacks = ExecutionCallbacks(
             loop=asyncio.get_running_loop(),
-            on_delta=on_delta,
-            on_turn_started=on_turn_started,
+            on_event=on_event,
             on_approval_request=on_approval_request,
         )
         return await asyncio.to_thread(

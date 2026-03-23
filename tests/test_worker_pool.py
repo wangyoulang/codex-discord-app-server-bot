@@ -3,6 +3,11 @@ from __future__ import annotations
 import asyncio
 
 from codex_discord_bot.codex.app_server_client import Notification
+from codex_discord_bot.codex.stream_events import AgentMessageDeltaEvent
+from codex_discord_bot.codex.stream_events import ItemCompletedEvent
+from codex_discord_bot.codex.stream_events import ItemStartedEvent
+from codex_discord_bot.codex.stream_events import TurnCompletedEvent
+from codex_discord_bot.codex.stream_events import TurnStartedEvent
 from codex_discord_bot.codex.worker import CodexWorker
 from codex_discord_bot.codex.worker_pool import WorkerPool
 from codex_discord_bot.config import Settings
@@ -94,10 +99,7 @@ def test_worker_uses_only_cwd_overrides_for_local_codex_config() -> None:
                 }
             }
 
-    async def noop_delta(_delta: str) -> None:
-        return None
-
-    async def noop_turn_started(_thread_id: str, _turn_id: str) -> None:
+    async def noop_event(_event) -> None:
         return None
 
     async def noop_approval(_envelope) -> dict:
@@ -120,18 +122,18 @@ def test_worker_uses_only_cwd_overrides_for_local_codex_config() -> None:
             cwd="/repo",
         )
 
-        thread_id, turn_id, final_text = await worker.run_streamed_text_turn(
+        result = await worker.run_streamed_text_turn(
             session,
             workspace,
             "你好",
-            on_delta=noop_delta,
-            on_turn_started=noop_turn_started,
+            on_event=noop_event,
             on_approval_request=noop_approval,
         )
 
-        assert thread_id == "thr_1"
-        assert turn_id == "turn_1"
-        assert final_text == "已完成"
+        assert result.thread_id == "thr_1"
+        assert result.turn_id == "turn_1"
+        assert result.final_text == "已完成"
+        assert result.turn_status == "completed"
         assert fake_client.thread_start_params == {"cwd": "/repo"}
         assert fake_client.turn_start_params == {"cwd": "/repo"}
 
@@ -169,5 +171,130 @@ def test_worker_resume_uses_only_cwd_override() -> None:
 
         assert thread_id == "thr_existing"
         assert fake_client.thread_resume_call == ("thr_existing", {"cwd": "/repo"})
+
+    asyncio.run(scenario())
+
+
+def test_worker_emits_structured_stream_events() -> None:
+    class FakeClient:
+        def thread_start(self, params: dict) -> dict:
+            assert params == {"cwd": "/repo"}
+            return {"thread": {"id": "thr_1"}}
+
+        def turn_start(self, thread_id: str, text: str, *, params: dict | None = None) -> dict:
+            assert thread_id == "thr_1"
+            assert text == "你好"
+            assert params == {"cwd": "/repo"}
+            return {"turn": {"id": "turn_1"}}
+
+        def next_notification(self) -> Notification:
+            if not self.notifications:
+                raise AssertionError("缺少通知")
+            return self.notifications.pop(0)
+
+        def thread_read(self, thread_id: str, *, include_turns: bool) -> dict:
+            assert thread_id == "thr_1"
+            assert include_turns is True
+            return {
+                "thread": {
+                    "turns": [
+                        {
+                            "id": "turn_1",
+                            "items": [{"type": "agentMessage", "id": "item_1", "text": "你好，世界"}],
+                        }
+                    ]
+                }
+            }
+
+        def __init__(self) -> None:
+            self.notifications = [
+                Notification(method="turn/started", payload={"threadId": "thr_1", "turn": {"id": "turn_1"}}),
+                Notification(
+                    method="item/started",
+                    payload={
+                        "threadId": "thr_1",
+                        "turnId": "turn_1",
+                        "item": {"id": "item_1", "type": "agentMessage", "text": ""},
+                    },
+                ),
+                Notification(
+                    method="item/agentMessage/delta",
+                    payload={
+                        "threadId": "thr_1",
+                        "turnId": "turn_1",
+                        "itemId": "item_1",
+                        "delta": "你好，",
+                    },
+                ),
+                Notification(
+                    method="item/agentMessage/delta",
+                    payload={
+                        "threadId": "thr_1",
+                        "turnId": "turn_1",
+                        "itemId": "item_1",
+                        "delta": "世界",
+                    },
+                ),
+                Notification(
+                    method="item/completed",
+                    payload={
+                        "threadId": "thr_1",
+                        "turnId": "turn_1",
+                        "item": {"id": "item_1", "type": "agentMessage", "text": "你好，世界"},
+                    },
+                ),
+                Notification(
+                    method="turn/completed",
+                    payload={"threadId": "thr_1", "turn": {"id": "turn_1", "status": "completed"}},
+                ),
+            ]
+
+    async def noop_approval(_envelope) -> dict:
+        return {"decision": "decline"}
+
+    async def scenario() -> None:
+        settings = Settings(discord_bot_token="token")
+        worker = CodexWorker(settings, worker_key="thread-1")
+        fake_client = FakeClient()
+        worker._client = fake_client  # type: ignore[assignment]
+        session = DiscordSession(
+            discord_thread_id="discord_thread_1",
+            workspace_id=1,
+            status=SessionStatus.ready,
+        )
+        workspace = Workspace(
+            guild_id="guild_1",
+            forum_channel_id="forum_1",
+            name="demo",
+            cwd="/repo",
+        )
+
+        events = []
+
+        async def on_event(event) -> None:
+            events.append(event)
+
+        result = await worker.run_streamed_text_turn(
+            session,
+            workspace,
+            "你好",
+            on_event=on_event,
+            on_approval_request=noop_approval,
+        )
+
+        assert result.final_text == "你好，世界"
+        assert [type(event) for event in events] == [
+            TurnStartedEvent,
+            ItemStartedEvent,
+            AgentMessageDeltaEvent,
+            AgentMessageDeltaEvent,
+            ItemCompletedEvent,
+            TurnCompletedEvent,
+        ]
+        assert events[0].turn_id == "turn_1"
+        assert events[1].item_id == "item_1"
+        assert events[2].delta == "你好，"
+        assert events[4].item["text"] == "你好，世界"
+        assert events[5].status == "completed"
 
     asyncio.run(scenario())

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-import asyncio
+from typing import TYPE_CHECKING
 
 import discord
 
 from codex_discord_bot.codex.approvals import ApprovalEnvelope
+from codex_discord_bot.codex.stream_events import TurnStartedEvent
+from codex_discord_bot.discord.streaming.turn_output_controller import TurnOutputController
 from codex_discord_bot.discord.views.approvals import ApprovalDecisionView
 from codex_discord_bot.discord.views.session_controls import SessionControlView
 from codex_discord_bot.logging import get_logger
-from codex_discord_bot.utils.text import truncate_text
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from codex_discord_bot.discord.bot import CodexDiscordBot
 
 
 async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message) -> None:
@@ -60,30 +64,34 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
         )
         return
 
-    status_message = await message.reply(
+    control_message = await message.channel.send(
         "正在调用 Codex...",
-        mention_author=False,
         view=SessionControlView(bot.app_state),
     )
-    edit_lock = asyncio.Lock()
-    streamed_text = ""
+    controller = TurnOutputController(
+        settings=bot.app_state.settings,
+        turn_output_service=bot.app_state.turn_output_service,
+        source_message=message,
+        control_message=control_message,
+    )
 
-    async def on_delta(delta: str) -> None:
-        nonlocal streamed_text
-        streamed_text += delta
-        async with edit_lock:
-            await status_message.edit(content=truncate_text(streamed_text))
-
-    async def on_turn_started(codex_thread_id: str, turn_id: str) -> None:
-        await bot.app_state.session_service.bind_codex_thread(
-            discord_thread_id=str(message.channel.id),
-            codex_thread_id=codex_thread_id,
-        )
-        await bot.app_state.session_service.mark_running(
-            discord_thread_id=str(message.channel.id),
-            active_turn_id=turn_id,
-            last_bot_message_id=str(status_message.id),
-        )
+    async def on_event(event) -> None:
+        if isinstance(event, TurnStartedEvent):
+            await bot.app_state.session_service.bind_codex_thread(
+                discord_thread_id=str(message.channel.id),
+                codex_thread_id=event.thread_id,
+            )
+            await bot.app_state.session_service.mark_running(
+                discord_thread_id=str(message.channel.id),
+                active_turn_id=event.turn_id,
+                last_bot_message_id=str(control_message.id),
+            )
+            await controller.bind_turn(
+                codex_thread_id=event.thread_id,
+                turn_id=event.turn_id,
+            )
+            return
+        await controller.handle_event(event)
 
     async def on_approval_request(envelope: ApprovalEnvelope) -> dict:
         pending = await bot.app_state.approval_service.register_request(
@@ -149,33 +157,38 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
 
     await bot.app_state.session_service.mark_running(
         discord_thread_id=str(message.channel.id),
-        last_bot_message_id=str(status_message.id),
+        last_bot_message_id=str(control_message.id),
     )
 
     try:
         async with bot.app_state.worker_pool.lease(worker_key) as worker:
-            codex_thread_id, _turn_id, reply_text = await worker.run_streamed_text_turn(
+            result = await worker.run_streamed_text_turn(
                 route.session,
                 route.workspace,
                 message.content,
-                on_delta=on_delta,
-                on_turn_started=on_turn_started,
+                on_event=on_event,
                 on_approval_request=on_approval_request,
             )
 
+        render_result = await controller.finalize(result)
         await bot.app_state.session_service.bind_codex_thread(
             discord_thread_id=str(message.channel.id),
-            codex_thread_id=codex_thread_id,
+            codex_thread_id=result.thread_id,
         )
-        await bot.app_state.session_service.mark_ready(
-            discord_thread_id=str(message.channel.id),
-            last_bot_message_id=str(status_message.id),
-        )
-        await status_message.edit(content=truncate_text(reply_text))
+        if render_result.state.value == "failed":
+            await bot.app_state.session_service.mark_error(
+                discord_thread_id=str(message.channel.id),
+                last_bot_message_id=render_result.last_message_id,
+            )
+        else:
+            await bot.app_state.session_service.mark_ready(
+                discord_thread_id=str(message.channel.id),
+                last_bot_message_id=render_result.last_message_id,
+            )
     except Exception as exc:
         logger.exception("thread.message.failed", error=str(exc), thread_id=message.channel.id)
+        render_result = await controller.fail(str(exc))
         await bot.app_state.session_service.mark_error(
             discord_thread_id=str(message.channel.id),
-            last_bot_message_id=str(status_message.id),
+            last_bot_message_id=render_result.last_message_id,
         )
-        await status_message.edit(content=f"Codex 执行失败：{exc}")

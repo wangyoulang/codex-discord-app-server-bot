@@ -15,6 +15,7 @@ from sqlalchemy.orm import relationship
 
 from codex_discord_bot.persistence.enums import PendingRequestType
 from codex_discord_bot.persistence.enums import SessionStatus
+from codex_discord_bot.persistence.enums import TurnOutputState
 from codex_discord_bot.utils.time import utc_now
 
 
@@ -64,6 +65,32 @@ class DiscordSession(Base):
     )
 
     workspace: Mapped[Workspace] = relationship(back_populates="sessions")
+
+
+class DiscordTurnOutput(Base):
+    __tablename__ = "discord_turn_outputs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    discord_thread_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    codex_thread_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    codex_turn_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    control_message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    preview_message_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    final_message_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    active_agent_item_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    state: Mapped[TurnOutputState] = mapped_column(
+        SqlEnum(TurnOutputState, native_enum=False),
+        default=TurnOutputState.pending,
+        nullable=False,
+    )
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
 
 
 class PendingRequest(Base):

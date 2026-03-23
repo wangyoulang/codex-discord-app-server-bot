@@ -46,6 +46,9 @@ def build_group(app_state) -> app_commands.Group:
             await interaction.response.send_message("当前线程还没有会话记录。", ephemeral=True)
             return
 
+        latest_output = await app_state.turn_output_service.get_latest_for_thread(
+            str(interaction.channel.id)
+        )
         worker_active = app_state.worker_pool.has_worker(str(interaction.channel.id))
         worker = app_state.worker_pool.get_worker(str(interaction.channel.id))
         live_active_turn = worker.get_active_turn() if worker is not None else None
@@ -58,6 +61,12 @@ def build_group(app_state) -> app_commands.Group:
                     f"active_turn_id: `{session.active_turn_id or '无'}`",
                     f"live_active_turn_id: `{live_active_turn.turn_id if live_active_turn is not None else '无'}`",
                     f"last_bot_message_id: `{session.last_bot_message_id or '无'}`",
+                    f"output_turn_id: `{latest_output.codex_turn_id if latest_output is not None else '无'}`",
+                    f"output_state: `{latest_output.state.value if latest_output is not None else '无'}`",
+                    f"control_message_id: `{latest_output.control_message_id if latest_output is not None else '无'}`",
+                    f"preview_count: `{len(latest_output.preview_message_ids_json or []) if latest_output is not None else 0}`",
+                    f"final_page_count: `{len(latest_output.final_message_ids_json or []) if latest_output is not None else 0}`",
+                    f"active_agent_item_id: `{latest_output.active_agent_item_id if latest_output is not None else '无'}`",
                     f"worker_active: `{worker_active}`",
                 ]
             ),
