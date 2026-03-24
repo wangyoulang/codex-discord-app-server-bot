@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import discord
 from discord import app_commands
 
@@ -8,6 +10,93 @@ from codex_discord_bot.discord.handlers.interactions import send_interaction_err
 
 def build_group(app_state) -> app_commands.Group:
     group = app_commands.Group(name="session", description="会话管理")
+
+    async def sync_workspace_threads(
+        *,
+        workspace,
+        scope: str,
+        search_term: str | None = None,
+        limit: int = 10,
+    ):
+        browser_key = f"session-browser:{workspace.id}"
+        async with app_state.worker_pool.lease(browser_key) as worker:
+            thread_payloads = await worker.list_threads(
+                cwd=workspace.cwd,
+                limit=limit,
+                search_term=search_term,
+                archived=False,
+            )
+
+        await app_state.codex_thread_service.sync_threads_from_payloads(
+            workspace_id=workspace.id,
+            thread_payloads=thread_payloads,
+            archived=False,
+        )
+        return await app_state.codex_thread_service.list_for_workspace(
+            workspace_id=workspace.id,
+            scope=scope,
+            query=search_term,
+            archived=False,
+            limit=limit,
+        )
+
+    def format_source_label(record) -> str:
+        return record.source_label or "unknown"
+
+    def format_preview(record) -> str:
+        preview = (record.preview or "").strip()
+        if not preview:
+            return "[无预览]"
+        compact = " ".join(preview.split())
+        if len(compact) <= 48:
+            return compact
+        return f"{compact[:45]}..."
+
+    def format_updated_at(record) -> str:
+        if not isinstance(record.thread_updated_at, datetime):
+            return "未知时间"
+        return f"<t:{int(record.thread_updated_at.timestamp())}:R>"
+
+    def format_binding(record, *, current_thread_id: str) -> str:
+        if record.bound_discord_thread_id is None:
+            return "未绑定"
+        if record.bound_discord_thread_id == current_thread_id:
+            return "已绑定当前线程"
+        return f"已绑定线程 {record.bound_discord_thread_id}"
+
+    async def resume_autocomplete(
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        if not isinstance(interaction.channel, discord.Thread):
+            return []
+
+        try:
+            route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
+        except ValueError:
+            return []
+
+        scope_value = getattr(interaction.namespace, "scope", "workspace") or "workspace"
+        scope = scope_value.value if isinstance(scope_value, app_commands.Choice) else scope_value
+        try:
+            records = await sync_workspace_threads(
+                workspace=route.workspace,
+                scope=scope,
+                search_term=current or None,
+                limit=20,
+            )
+        except Exception:
+            return []
+        current_thread_id = str(interaction.channel.id)
+        choices: list[app_commands.Choice[str]] = []
+        for record in records[:25]:
+            name = (
+                f"[{format_source_label(record)}] "
+                f"{format_preview(record)} | "
+                f"{format_binding(record, current_thread_id=current_thread_id)}"
+            )
+            choices.append(app_commands.Choice(name=name[:100], value=record.codex_thread_id))
+        return choices
 
     @group.command(name="new", description="为当前 Discord 线程初始化 Codex 会话")
     async def new_session(interaction: discord.Interaction) -> None:
@@ -19,9 +108,20 @@ def build_group(app_state) -> app_commands.Group:
             route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
             async with app_state.worker_pool.lease(str(interaction.channel.id)) as worker:
                 codex_thread_id = await worker.ensure_thread(route.session, route.workspace)
+                thread_payload = await worker.read_thread(codex_thread_id, include_turns=False)
             await app_state.session_service.bind_codex_thread(
                 discord_thread_id=str(interaction.channel.id),
                 codex_thread_id=codex_thread_id,
+            )
+            await app_state.codex_thread_service.sync_thread_from_payload(
+                workspace_id=route.workspace.id,
+                thread_payload=thread_payload,
+                archived=False,
+            )
+            await app_state.codex_thread_service.ensure_thread_available_for_discord(
+                workspace_id=route.workspace.id,
+                codex_thread_id=codex_thread_id,
+                discord_thread_id=str(interaction.channel.id),
             )
         except ValueError as exc:
             await send_interaction_error(interaction, str(exc))
@@ -52,11 +152,17 @@ def build_group(app_state) -> app_commands.Group:
         worker_active = app_state.worker_pool.has_worker(str(interaction.channel.id))
         worker = app_state.worker_pool.get_worker(str(interaction.channel.id))
         live_active_turn = worker.get_active_turn() if worker is not None else None
+        codex_thread = None
+        if session.codex_thread_id is not None:
+            codex_thread = await app_state.codex_thread_service.get_by_codex_thread_id(session.codex_thread_id)
         await interaction.response.send_message(
             "\n".join(
                 [
                     f"discord_thread_id: `{session.discord_thread_id}`",
                     f"codex_thread_id: `{session.codex_thread_id or '未创建'}`",
+                    f"codex_source: `{codex_thread.source_label if codex_thread is not None and codex_thread.source_label else '未知'}`",
+                    f"codex_preview: `{format_preview(codex_thread) if codex_thread is not None else '无'}`",
+                    f"codex_bound_thread_id: `{codex_thread.bound_discord_thread_id if codex_thread is not None and codex_thread.bound_discord_thread_id is not None else '无'}`",
                     f"status: `{session.status.value}`",
                     f"active_turn_id: `{session.active_turn_id or '无'}`",
                     f"live_active_turn_id: `{live_active_turn.turn_id if live_active_turn is not None else '无'}`",
@@ -68,6 +174,148 @@ def build_group(app_state) -> app_commands.Group:
                     f"final_page_count: `{len(latest_output.final_message_ids_json or []) if latest_output is not None else 0}`",
                     f"active_agent_item_id: `{latest_output.active_agent_item_id if latest_output is not None else '无'}`",
                     f"worker_active: `{worker_active}`",
+                ]
+            ),
+            ephemeral=True,
+        )
+
+    @group.command(name="list", description="列出当前工作区可恢复的 Codex 会话")
+    @app_commands.describe(scope="会话范围")
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="当前工作区", value="workspace"),
+            app_commands.Choice(name="仅 Bot 来源", value="bot"),
+        ]
+    )
+    async def list_sessions(
+        interaction: discord.Interaction,
+        scope: str = "workspace",
+    ) -> None:
+        if not isinstance(interaction.channel, discord.Thread):
+            await send_interaction_error(interaction, "请在论坛线程中执行该命令。")
+            return
+
+        try:
+            route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
+            records = await sync_workspace_threads(
+                workspace=route.workspace,
+                scope=scope,
+                limit=10,
+            )
+        except ValueError as exc:
+            await send_interaction_error(interaction, str(exc))
+            return
+        except Exception as exc:
+            await send_interaction_error(interaction, f"读取会话列表失败：{exc}")
+            return
+
+        if not records:
+            await interaction.response.send_message(
+                f"当前工作区下没有可恢复的 Codex 会话，scope=`{scope}`。",
+                ephemeral=True,
+            )
+            return
+
+        current_thread_id = str(interaction.channel.id)
+        lines = [f"当前工作区可恢复的 Codex 会话（scope=`{scope}`）："]
+        for record in records:
+            lines.append(
+                " ".join(
+                    [
+                        f"`{record.codex_thread_id}`",
+                        f"[{format_source_label(record)}]",
+                        f"{format_updated_at(record)}",
+                        f"{format_binding(record, current_thread_id=current_thread_id)}",
+                        f"{format_preview(record)}",
+                    ]
+                )
+            )
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    @group.command(name="resume", description="在当前 Discord 线程恢复一个历史 Codex 会话")
+    @app_commands.describe(session="要恢复的 Codex 会话", scope="会话范围")
+    @app_commands.autocomplete(session=resume_autocomplete)
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="当前工作区", value="workspace"),
+            app_commands.Choice(name="仅 Bot 来源", value="bot"),
+        ]
+    )
+    async def resume_session(
+        interaction: discord.Interaction,
+        session: str,
+        scope: str = "workspace",
+    ) -> None:
+        if not isinstance(interaction.channel, discord.Thread):
+            await send_interaction_error(interaction, "请在论坛线程中执行该命令。")
+            return
+
+        worker = app_state.worker_pool.get_worker(str(interaction.channel.id))
+        live_active_turn = worker.get_active_turn() if worker is not None else None
+        if app_state.worker_pool.is_busy(str(interaction.channel.id)) or live_active_turn is not None:
+            await send_interaction_error(interaction, "当前线程存在运行中的 turn，请先等待完成或手动打断。")
+            return
+
+        try:
+            route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
+            browser_key = f"session-browser:{route.workspace.id}"
+            async with app_state.worker_pool.lease(browser_key) as browser:
+                thread_payload = await browser.read_thread(session, include_turns=False)
+            if thread_payload.get("cwd") != route.workspace.cwd:
+                await send_interaction_error(interaction, "目标会话不属于当前工作区，无法恢复。")
+                return
+
+            record = await app_state.codex_thread_service.sync_thread_from_payload(
+                workspace_id=route.workspace.id,
+                thread_payload=thread_payload,
+                archived=False,
+            )
+            if scope == "bot" and record.source_label != "discord-bot":
+                await send_interaction_error(interaction, "scope=`bot` 仅允许恢复由 Discord bot 创建的会话。")
+                return
+
+            await app_state.codex_thread_service.ensure_thread_available_for_discord(
+                workspace_id=route.workspace.id,
+                codex_thread_id=session,
+                discord_thread_id=str(interaction.channel.id),
+            )
+            if route.session.codex_thread_id and route.session.codex_thread_id != session:
+                await app_state.codex_thread_service.release_binding_if_owned(
+                    codex_thread_id=route.session.codex_thread_id,
+                    discord_thread_id=str(interaction.channel.id),
+                )
+            await app_state.session_service.bind_codex_thread(
+                discord_thread_id=str(interaction.channel.id),
+                codex_thread_id=session,
+            )
+            await app_state.session_service.mark_ready(
+                discord_thread_id=str(interaction.channel.id),
+            )
+            await app_state.audit_service.record(
+                action="session_resumed",
+                guild_id=str(interaction.guild.id) if interaction.guild is not None else None,
+                discord_thread_id=str(interaction.channel.id),
+                actor_id=str(interaction.user.id),
+                payload={
+                    "codex_thread_id": session,
+                    "scope": scope,
+                    "source_label": record.source_label,
+                },
+            )
+        except ValueError as exc:
+            await send_interaction_error(interaction, str(exc))
+            return
+        except Exception as exc:
+            await send_interaction_error(interaction, f"恢复 Codex 会话失败：{exc}")
+            return
+
+        await interaction.response.send_message(
+            "\n".join(
+                [
+                    f"Codex 会话已恢复：`{session}`",
+                    f"来源：`{record.source_label or 'unknown'}`",
+                    f"预览：`{format_preview(record)}`",
+                    "后续直接发消息即可继续该会话。",
                 ]
             ),
             ephemeral=True,

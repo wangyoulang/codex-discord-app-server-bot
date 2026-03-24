@@ -34,6 +34,20 @@ def test_worker_pool_reaps_idle_worker() -> None:
     asyncio.run(scenario())
 
 
+def test_worker_pool_force_reset_closes_worker_entry() -> None:
+    async def scenario() -> None:
+        settings = Settings(discord_bot_token="token")
+        pool = WorkerPool(settings)
+
+        async with pool.lease("thread-1") as _worker:
+            assert pool.has_worker("thread-1") is True
+
+        await pool.force_reset("thread-1")
+        assert pool.has_worker("thread-1") is False
+
+    asyncio.run(scenario())
+
+
 def test_worker_supports_steer_and_interrupt_on_active_turn() -> None:
     class FakeClient:
         def __init__(self) -> None:

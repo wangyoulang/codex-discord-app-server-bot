@@ -32,6 +32,7 @@ class Settings(BaseSettings):
 
     codex_bin: str | None = None
     codex_home: Path | None = None
+    codex_session_source: str = "discord-bot"
 
     worker_idle_timeout_seconds: int = 900
 

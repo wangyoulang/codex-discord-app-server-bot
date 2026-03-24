@@ -27,11 +27,16 @@ class SessionControlView(discord.ui.View):
 
         worker = self.app_state.worker_pool.get_worker(str(interaction.channel.id))
         active_turn = worker.get_active_turn() if worker is not None else None
+        codex_thread = None
+        if session.codex_thread_id is not None:
+            codex_thread = await self.app_state.codex_thread_service.get_by_codex_thread_id(session.codex_thread_id)
         await interaction.response.send_message(
             "\n".join(
                 [
                     f"discord_thread_id: `{session.discord_thread_id}`",
                     f"codex_thread_id: `{session.codex_thread_id or '未创建'}`",
+                    f"codex_source: `{codex_thread.source_label if codex_thread is not None and codex_thread.source_label else '未知'}`",
+                    f"codex_bound_thread_id: `{codex_thread.bound_discord_thread_id if codex_thread is not None and codex_thread.bound_discord_thread_id is not None else '无'}`",
                     f"status: `{session.status.value}`",
                     f"active_turn_id: `{session.active_turn_id or '无'}`",
                     f"live_active_turn_id: `{active_turn.turn_id if active_turn is not None else '无'}`",

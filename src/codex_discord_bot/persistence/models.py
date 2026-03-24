@@ -39,7 +39,33 @@ class Workspace(Base):
         nullable=False,
     )
 
+    codex_threads: Mapped[list["CodexThread"]] = relationship(back_populates="workspace")
     sessions: Mapped[list["DiscordSession"]] = relationship(back_populates="workspace")
+
+
+class CodexThread(Base):
+    __tablename__ = "codex_threads"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    codex_thread_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    source_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_label: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    archived: Mapped[bool] = mapped_column(default=False, nullable=False)
+    thread_status: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
+    bound_discord_thread_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    thread_created_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    thread_updated_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+    workspace: Mapped[Workspace] = relationship(back_populates="codex_threads")
 
 
 class DiscordSession(Base):

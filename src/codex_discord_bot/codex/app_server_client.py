@@ -19,6 +19,7 @@ class AppServerConfig:
     codex_bin: str | None = None
     cwd: str | None = None
     env: dict[str, str] | None = None
+    session_source: str = "discord-bot"
     client_name: str = "codex_discord_bot"
     client_title: str = "Codex Discord Bot"
     client_version: str = "0.1.0"
@@ -51,7 +52,14 @@ class AppServerClient:
         if self._proc is not None:
             return
 
-        cmd = [self.config.codex_bin or "codex", "app-server", "--listen", "stdio://"]
+        cmd = [
+            self.config.codex_bin or "codex",
+            "app-server",
+            "--listen",
+            "stdio://",
+            "--session-source",
+            self.config.session_source,
+        ]
         env = os.environ.copy()
         if self.config.env:
             env.update(self.config.env)
@@ -151,6 +159,9 @@ class AppServerClient:
 
     def thread_start(self, params: dict[str, Any]) -> dict[str, Any]:
         return self.request("thread/start", params)
+
+    def thread_list(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.request("thread/list", params or {})
 
     def thread_resume(self, thread_id: str, params: dict[str, Any]) -> dict[str, Any]:
         payload = {"threadId": thread_id, **params}

@@ -168,6 +168,72 @@ class CodexWorker:
     ) -> str:
         return await asyncio.to_thread(self._ensure_thread_sync, session, workspace)
 
+    def _list_threads_sync(
+        self,
+        *,
+        cwd: str,
+        limit: int,
+        search_term: str | None,
+        archived: bool,
+    ) -> list[dict[str, Any]]:
+        self._ensure_client_sync()
+        assert self._client is not None
+
+        params: dict[str, Any] = {
+            "cwd": cwd,
+            "limit": limit,
+            "archived": archived,
+        }
+        if search_term:
+            params["searchTerm"] = search_term
+        result = self._client.thread_list(params)
+        data = result.get("data")
+        if not isinstance(data, list):
+            raise RuntimeError("thread/list 响应缺少 data")
+        return [item for item in data if isinstance(item, dict)]
+
+    async def list_threads(
+        self,
+        *,
+        cwd: str,
+        limit: int = 10,
+        search_term: str | None = None,
+        archived: bool = False,
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._list_threads_sync,
+            cwd=cwd,
+            limit=limit,
+            search_term=search_term,
+            archived=archived,
+        )
+
+    def _read_thread_sync(
+        self,
+        thread_id: str,
+        *,
+        include_turns: bool,
+    ) -> dict[str, Any]:
+        self._ensure_client_sync()
+        assert self._client is not None
+        result = self._client.thread_read(thread_id, include_turns=include_turns)
+        thread = result.get("thread")
+        if not isinstance(thread, dict):
+            raise RuntimeError("thread/read 响应缺少 thread")
+        return thread
+
+    async def read_thread(
+        self,
+        thread_id: str,
+        *,
+        include_turns: bool,
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            self._read_thread_sync,
+            thread_id,
+            include_turns=include_turns,
+        )
+
     def _run_streamed_turn_sync(
         self,
         session: DiscordSession,

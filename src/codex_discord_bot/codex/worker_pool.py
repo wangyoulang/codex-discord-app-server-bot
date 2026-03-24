@@ -57,6 +57,12 @@ class WorkerPool:
             return None
         return entry.worker
 
+    async def force_reset(self, worker_key: str) -> None:
+        async with self._manager_lock:
+            entry = self._entries.pop(worker_key, None)
+        if entry is not None:
+            await entry.worker.close()
+
     async def reap_idle_workers(self) -> int:
         cutoff_seconds = self.settings.worker_idle_timeout_seconds
         now = utc_now()

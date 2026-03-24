@@ -9,6 +9,7 @@ from codex_discord_bot.persistence.db import Database
 from codex_discord_bot.services.approval_service import ApprovalService
 from codex_discord_bot.services.artifact_service import ArtifactService
 from codex_discord_bot.services.audit_service import AuditService
+from codex_discord_bot.services.codex_thread_service import CodexThreadService
 from codex_discord_bot.services.review_service import ReviewService
 from codex_discord_bot.services.session_service import SessionService
 from codex_discord_bot.services.turn_output_service import TurnOutputService
@@ -25,6 +26,7 @@ class ApplicationContext:
     approval_service: ApprovalService
     review_service: ReviewService
     artifact_service: ArtifactService
+    codex_thread_service: CodexThreadService
     audit_service: AuditService
     worker_pool: object | None = None
     session_router: object | None = None
@@ -65,6 +67,7 @@ async def build_application_context() -> ApplicationContext:
         approval_service=ApprovalService(db),
         review_service=ReviewService(),
         artifact_service=ArtifactService(settings.artifact_dir),
+        codex_thread_service=CodexThreadService(db),
         audit_service=AuditService(db),
         background_tasks=[],
     )

@@ -27,3 +27,14 @@ def test_build_codex_config_overrides_codex_home_when_explicitly_configured(monk
 
     assert config.env is not None
     assert config.env["CODEX_HOME"] == "/override/codex-home"
+
+
+def test_build_codex_config_sets_discord_bot_session_source() -> None:
+    settings = Settings(
+        discord_bot_token="token",
+        codex_session_source="discord-bot",
+    )
+
+    config = build_codex_config(settings)
+
+    assert config.session_source == "discord-bot"

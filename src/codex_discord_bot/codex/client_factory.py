@@ -14,6 +14,7 @@ def build_codex_config(settings: Settings, *, cwd: str | None = None) -> AppServ
         codex_bin=settings.codex_bin,
         cwd=cwd,
         env=env,
+        session_source=settings.codex_session_source,
         client_name="codex_discord_bot",
         client_title="Codex Discord Bot",
         client_version="0.1.0",

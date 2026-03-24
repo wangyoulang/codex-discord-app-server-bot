@@ -35,6 +35,25 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
     worker_key = str(message.channel.id)
     is_busy = bot.app_state.worker_pool.is_busy(worker_key)
     worker = bot.app_state.worker_pool.get_worker(worker_key) if is_busy else None
+    if route.session.codex_thread_id:
+        try:
+            await bot.app_state.codex_thread_service.ensure_thread_available_for_discord(
+                workspace_id=route.workspace.id,
+                codex_thread_id=route.session.codex_thread_id,
+                discord_thread_id=str(message.channel.id),
+            )
+        except ValueError as exc:
+            await message.reply(
+                f"{exc}\n如需继续当前工作区中的其他会话，请执行 `/codex session resume`。",
+                mention_author=False,
+            )
+            return
+
+    if not is_busy and route.session.status.value == "running":
+        await bot.app_state.session_service.mark_ready(
+            discord_thread_id=str(message.channel.id),
+        )
+
     if is_busy:
         if worker is None or worker.get_active_turn() is None:
             await message.reply("当前 turn 正在启动，请稍后再次发送消息。", mention_author=False)
@@ -78,30 +97,41 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
     if is_busy:
         try:
             turn_id = await worker.steer_turn(input_items)
-        except Exception as exc:
-            logger.exception("thread.message.steer_failed", error=str(exc), thread_id=message.channel.id)
+            await bot.app_state.session_service.mark_running(
+                discord_thread_id=str(message.channel.id),
+                active_turn_id=turn_id,
+            )
+            await bot.app_state.audit_service.record(
+                action="thread_message_steered",
+                guild_id=str(message.guild.id),
+                discord_thread_id=str(message.channel.id),
+                actor_id=str(message.author.id),
+                payload={**audit_payload, "turn_id": turn_id},
+            )
             await message.reply(
-                "追加到当前进行中的 Codex turn 失败，可能该 turn 已刚结束，请重新发送一条消息。",
+                f"已追加到当前进行中的 Codex turn：`{turn_id}`",
                 mention_author=False,
             )
             return
-
-        await bot.app_state.session_service.mark_running(
-            discord_thread_id=str(message.channel.id),
-            active_turn_id=turn_id,
-        )
-        await bot.app_state.audit_service.record(
-            action="thread_message_steered",
-            guild_id=str(message.guild.id),
-            discord_thread_id=str(message.channel.id),
-            actor_id=str(message.author.id),
-            payload={**audit_payload, "turn_id": turn_id},
-        )
-        await message.reply(
-            f"已追加到当前进行中的 Codex turn：`{turn_id}`",
-            mention_author=False,
-        )
-        return
+        except Exception as exc:
+            if "no active turn to steer" in str(exc):
+                logger.warning(
+                    "thread.message.steer_stale_turn",
+                    error=str(exc),
+                    thread_id=message.channel.id,
+                )
+                await bot.app_state.worker_pool.force_reset(worker_key)
+                await bot.app_state.session_service.mark_ready(
+                    discord_thread_id=str(message.channel.id),
+                )
+                is_busy = False
+            else:
+                logger.exception("thread.message.steer_failed", error=str(exc), thread_id=message.channel.id)
+                await message.reply(
+                    "追加到当前进行中的 Codex turn 失败，可能该 turn 已刚结束，请重新发送一条消息。",
+                    mention_author=False,
+                )
+                return
 
     control_message = await message.channel.send(
         "正在调用 Codex...",
@@ -119,6 +149,11 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
             await bot.app_state.session_service.bind_codex_thread(
                 discord_thread_id=str(message.channel.id),
                 codex_thread_id=event.thread_id,
+            )
+            await bot.app_state.codex_thread_service.ensure_thread_available_for_discord(
+                workspace_id=route.workspace.id,
+                codex_thread_id=event.thread_id,
+                discord_thread_id=str(message.channel.id),
             )
             await bot.app_state.session_service.mark_running(
                 discord_thread_id=str(message.channel.id),
@@ -208,8 +243,14 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
                 on_event=on_event,
                 on_approval_request=on_approval_request,
             )
+            thread_payload = await worker.read_thread(result.thread_id, include_turns=False)
 
         render_result = await controller.finalize(result)
+        await bot.app_state.codex_thread_service.sync_thread_from_payload(
+            workspace_id=route.workspace.id,
+            thread_payload=thread_payload,
+            archived=False,
+        )
         await bot.app_state.session_service.bind_codex_thread(
             discord_thread_id=str(message.channel.id),
             codex_thread_id=result.thread_id,
