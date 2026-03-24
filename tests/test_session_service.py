@@ -66,6 +66,19 @@ def test_session_service_tracks_active_turn_lifecycle(tmp_path: Path) -> None:
         assert errored.active_turn_id is None
         assert errored.last_bot_message_id == "msg_3"
 
+        rebound = await service.bind_codex_thread(
+            discord_thread_id="discord_thread_1",
+            codex_thread_id="codex_thread_1",
+        )
+        assert rebound.codex_thread_id == "codex_thread_1"
+
+        detached = await service.detach_codex_thread(
+            discord_thread_id="discord_thread_1",
+        )
+        assert detached.codex_thread_id is None
+        assert detached.status == SessionStatus.ready
+        assert await service.get_session_for_codex_thread("codex_thread_1") is None
+
         await db.close()
 
     asyncio.run(scenario())

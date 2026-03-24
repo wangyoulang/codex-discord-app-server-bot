@@ -163,6 +163,12 @@ class AppServerClient:
     def thread_list(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.request("thread/list", params or {})
 
+    def thread_archive(self, thread_id: str) -> dict[str, Any]:
+        return self.request("thread/archive", {"threadId": thread_id})
+
+    def thread_unarchive(self, thread_id: str) -> dict[str, Any]:
+        return self.request("thread/unarchive", {"threadId": thread_id})
+
     def thread_resume(self, thread_id: str, params: dict[str, Any]) -> dict[str, Any]:
         payload = {"threadId": thread_id, **params}
         return self.request("thread/resume", payload)

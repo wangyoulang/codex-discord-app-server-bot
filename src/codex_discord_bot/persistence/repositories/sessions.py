@@ -21,11 +21,15 @@ class DiscordSessionRepository:
         stmt = select(DiscordSession).where(DiscordSession.discord_thread_id == discord_thread_id)
         return await self.session.scalar(stmt)
 
+    async def get_by_codex_thread_id(self, codex_thread_id: str) -> DiscordSession | None:
+        stmt = select(DiscordSession).where(DiscordSession.codex_thread_id == codex_thread_id)
+        return await self.session.scalar(stmt)
+
     async def update_codex_thread_id(
         self,
         record: DiscordSession,
         *,
-        codex_thread_id: str,
+        codex_thread_id: str | None,
     ) -> DiscordSession:
         record.codex_thread_id = codex_thread_id
         await self.session.flush()

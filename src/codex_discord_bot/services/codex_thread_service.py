@@ -19,6 +19,50 @@ class CodexThreadService:
             repo = CodexThreadRepository(session)
             return await repo.get_by_codex_thread_id(codex_thread_id)
 
+    async def bind_thread_to_discord(
+        self,
+        *,
+        codex_thread_id: str,
+        workspace_id: int,
+        discord_thread_id: str,
+    ) -> CodexThread:
+        async with self.db.session() as session:
+            repo = CodexThreadRepository(session)
+            record = await repo.get_by_codex_thread_id(codex_thread_id)
+            if record is None:
+                record = CodexThread(
+                    codex_thread_id=codex_thread_id,
+                    workspace_id=workspace_id,
+                    source_label="unknown",
+                    archived=False,
+                    thread_status="unknown",
+                    bound_discord_thread_id=discord_thread_id,
+                )
+                return await repo.create(record)
+
+            if record.workspace_id != workspace_id:
+                raise ValueError("目标会话不属于当前工作区，无法恢复。")
+            record.bound_discord_thread_id = discord_thread_id
+            record.updated_at = utc_now()
+            if not record.source_label:
+                record.source_label = "unknown"
+            return await repo.save(record)
+
+    async def set_archived_state(
+        self,
+        *,
+        codex_thread_id: str,
+        archived: bool,
+    ) -> CodexThread:
+        async with self.db.session() as session:
+            repo = CodexThreadRepository(session)
+            record = await repo.get_by_codex_thread_id(codex_thread_id)
+            if record is None:
+                raise ValueError("Codex 会话不存在，无法更新归档状态。")
+            record.archived = archived
+            record.updated_at = utc_now()
+            return await repo.save(record)
+
     async def list_for_workspace(
         self,
         *,

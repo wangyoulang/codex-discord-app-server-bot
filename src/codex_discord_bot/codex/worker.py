@@ -234,6 +234,26 @@ class CodexWorker:
             include_turns=include_turns,
         )
 
+    def _archive_thread_sync(self, thread_id: str) -> None:
+        self._ensure_client_sync()
+        assert self._client is not None
+        self._client.thread_archive(thread_id)
+
+    async def archive_thread(self, thread_id: str) -> None:
+        await asyncio.to_thread(self._archive_thread_sync, thread_id)
+
+    def _unarchive_thread_sync(self, thread_id: str) -> dict[str, Any]:
+        self._ensure_client_sync()
+        assert self._client is not None
+        result = self._client.thread_unarchive(thread_id)
+        thread = result.get("thread")
+        if not isinstance(thread, dict):
+            raise RuntimeError("thread/unarchive 响应缺少 thread")
+        return thread
+
+    async def unarchive_thread(self, thread_id: str) -> dict[str, Any]:
+        return await asyncio.to_thread(self._unarchive_thread_sync, thread_id)
+
     def _run_streamed_turn_sync(
         self,
         session: DiscordSession,

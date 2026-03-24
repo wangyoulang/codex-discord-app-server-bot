@@ -140,6 +140,19 @@ def test_codex_thread_service_rejects_cross_thread_binding_takeover(tmp_path: Pa
         )
         assert rebound.bound_discord_thread_id == "discord_thread_2"
 
+        forced = await service.bind_thread_to_discord(
+            workspace_id=workspace.id,
+            codex_thread_id="codex_thr_2",
+            discord_thread_id="discord_thread_3",
+        )
+        assert forced.bound_discord_thread_id == "discord_thread_3"
+
+        archived = await service.set_archived_state(
+            codex_thread_id="codex_thr_2",
+            archived=True,
+        )
+        assert archived.archived is True
+
         await db.close()
 
     asyncio.run(scenario())

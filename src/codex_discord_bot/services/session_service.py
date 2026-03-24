@@ -33,11 +33,16 @@ class SessionService:
             repo = DiscordSessionRepository(session)
             return await repo.get_by_discord_thread_id(discord_thread_id)
 
+    async def get_session_for_codex_thread(self, codex_thread_id: str) -> DiscordSession | None:
+        async with self.db.session() as session:
+            repo = DiscordSessionRepository(session)
+            return await repo.get_by_codex_thread_id(codex_thread_id)
+
     async def bind_codex_thread(
         self,
         *,
         discord_thread_id: str,
-        codex_thread_id: str,
+        codex_thread_id: str | None,
     ) -> DiscordSession:
         async with self.db.session() as session:
             repo = DiscordSessionRepository(session)
@@ -45,6 +50,23 @@ class SessionService:
             if record is None:
                 raise ValueError("会话不存在，无法绑定 Codex thread")
             return await repo.update_codex_thread_id(record, codex_thread_id=codex_thread_id)
+
+    async def detach_codex_thread(
+        self,
+        *,
+        discord_thread_id: str,
+    ) -> DiscordSession:
+        async with self.db.session() as session:
+            repo = DiscordSessionRepository(session)
+            record = await repo.get_by_discord_thread_id(discord_thread_id)
+            if record is None:
+                raise ValueError("会话不存在，无法解绑 Codex thread")
+            record = await repo.update_codex_thread_id(record, codex_thread_id=None)
+            return await repo.update_status(
+                record,
+                status=SessionStatus.ready,
+                active_turn_id=None,
+            )
 
     async def mark_running(
         self,

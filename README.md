@@ -37,8 +37,9 @@ uv run python scripts/dev.py
 3. 在 Discord 服务器里执行 `/codex project add`，把论坛频道绑定到项目根目录。
 4. 在该论坛频道中新建线程，执行 `/codex session new`。
 5. 若需要恢复历史会话，可执行 `/codex session list` 和 `/codex session resume`。
-6. 直接在论坛线程里发文本消息或图片附件即可。
-7. 如果 Codex 正在执行，再发新消息会走 `turn/steer`；需要停止时可以点击“打断”按钮。
+6. 若需要会话整理，可执行 `/codex session detach`、`/codex session archive`、`/codex session unarchive`。
+7. 直接在论坛线程里发文本消息或图片附件即可。
+8. 如果 Codex 正在执行，再发新消息会走 `turn/steer`；需要停止时可以点击“打断”按钮。
 
 目录结构：
 
@@ -51,7 +52,7 @@ uv run python scripts/dev.py
 
 当前功能边界：
 
-- 已支持：工作区注册、会话初始化、历史会话列出与恢复、流式消息渲染、图片附件输入、`turn/steer`、`turn/interrupt`
+- 已支持：工作区注册、历史会话列出与恢复、会话解绑与归档管理、流式消息渲染、图片附件输入、`turn/steer`、`turn/interrupt`
 - 未支持：非图片附件输入、`review/start`
 
 设计目标：

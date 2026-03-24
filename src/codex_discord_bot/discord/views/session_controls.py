@@ -36,6 +36,7 @@ class SessionControlView(discord.ui.View):
                     f"discord_thread_id: `{session.discord_thread_id}`",
                     f"codex_thread_id: `{session.codex_thread_id or '未创建'}`",
                     f"codex_source: `{codex_thread.source_label if codex_thread is not None and codex_thread.source_label else '未知'}`",
+                    f"codex_archived: `{codex_thread.archived if codex_thread is not None else '未知'}`",
                     f"codex_bound_thread_id: `{codex_thread.bound_discord_thread_id if codex_thread is not None and codex_thread.bound_discord_thread_id is not None else '无'}`",
                     f"status: `{session.status.value}`",
                     f"active_turn_id: `{session.active_turn_id or '无'}`",
