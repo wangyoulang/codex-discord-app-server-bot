@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from dataclasses import field
 import threading
+from typing import Any
 
 from codex_discord_bot.codex.approvals import build_approval_envelope
 from codex_discord_bot.codex.app_server_client import AppServerClient
@@ -43,6 +44,9 @@ class TurnRunResult:
     turn_status: str
     error_message: str | None = None
     assistant_messages: list[AssistantMessageSnapshot] = field(default_factory=list)
+
+
+UserInputItems = list[dict[str, Any]] | dict[str, Any] | str
 
 
 class CodexWorker:
@@ -164,11 +168,11 @@ class CodexWorker:
     ) -> str:
         return await asyncio.to_thread(self._ensure_thread_sync, session, workspace)
 
-    def _run_streamed_text_turn_sync(
+    def _run_streamed_turn_sync(
         self,
         session: DiscordSession,
         workspace: Workspace,
-        text: str,
+        input_items: UserInputItems,
         callbacks: ExecutionCallbacks,
     ) -> TurnRunResult:
         self._active_callbacks = callbacks
@@ -177,7 +181,7 @@ class CodexWorker:
             assert self._client is not None
 
             params = {"cwd": workspace.cwd}
-            started = self._client.turn_start(thread_id, text, params=params)
+            started = self._client.turn_start(thread_id, input_items, params=params)
             started_turn = started.get("turn")
             if not isinstance(started_turn, dict):
                 raise RuntimeError("turn/start 响应缺少 turn")
@@ -284,6 +288,15 @@ class CodexWorker:
                 self._clear_active_turn(active_turn.thread_id, active_turn.turn_id)
             self._active_callbacks = None
 
+    def _run_streamed_text_turn_sync(
+        self,
+        session: DiscordSession,
+        workspace: Workspace,
+        text: str,
+        callbacks: ExecutionCallbacks,
+    ) -> TurnRunResult:
+        return self._run_streamed_turn_sync(session, workspace, text, callbacks)
+
     def _emit_stream_event(
         self,
         callbacks: ExecutionCallbacks,
@@ -336,20 +349,37 @@ class CodexWorker:
         on_event,
         on_approval_request,
     ) -> TurnRunResult:
+        return await self.run_streamed_turn(
+            session,
+            workspace,
+            text,
+            on_event=on_event,
+            on_approval_request=on_approval_request,
+        )
+
+    async def run_streamed_turn(
+        self,
+        session: DiscordSession,
+        workspace: Workspace,
+        input_items: UserInputItems,
+        *,
+        on_event,
+        on_approval_request,
+    ) -> TurnRunResult:
         callbacks = ExecutionCallbacks(
             loop=asyncio.get_running_loop(),
             on_event=on_event,
             on_approval_request=on_approval_request,
         )
         return await asyncio.to_thread(
-            self._run_streamed_text_turn_sync,
+            self._run_streamed_turn_sync,
             session,
             workspace,
-            text,
+            input_items,
             callbacks,
         )
 
-    def _steer_text_turn_sync(self, text: str) -> str:
+    def _steer_turn_sync(self, input_items: UserInputItems) -> str:
         active_turn = self.get_active_turn()
         if active_turn is None:
             raise RuntimeError("当前没有运行中的 turn")
@@ -358,7 +388,7 @@ class CodexWorker:
         assert self._client is not None
         response = self._client.turn_steer(
             active_turn.thread_id,
-            text,
+            input_items,
             expected_turn_id=active_turn.turn_id,
         )
         turn_id = response.get("turnId")
@@ -366,8 +396,14 @@ class CodexWorker:
             return turn_id
         return active_turn.turn_id
 
+    def _steer_text_turn_sync(self, text: str) -> str:
+        return self._steer_turn_sync(text)
+
     async def steer_text_turn(self, text: str) -> str:
-        return await asyncio.to_thread(self._steer_text_turn_sync, text)
+        return await self.steer_turn(text)
+
+    async def steer_turn(self, input_items: UserInputItems) -> str:
+        return await asyncio.to_thread(self._steer_turn_sync, input_items)
 
     def _interrupt_active_turn_sync(self) -> str | None:
         active_turn = self.get_active_turn()

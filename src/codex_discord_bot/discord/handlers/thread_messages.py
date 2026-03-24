@@ -6,6 +6,8 @@ import discord
 
 from codex_discord_bot.codex.approvals import ApprovalEnvelope
 from codex_discord_bot.codex.stream_events import TurnStartedEvent
+from codex_discord_bot.discord.handlers.attachments import build_message_input_items
+from codex_discord_bot.discord.handlers.attachments import collect_supported_attachments
 from codex_discord_bot.discord.streaming.turn_output_controller import TurnOutputController
 from codex_discord_bot.discord.views.approvals import ApprovalDecisionView
 from codex_discord_bot.discord.views.session_controls import SessionControlView
@@ -31,14 +33,51 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
         return
 
     worker_key = str(message.channel.id)
-    if bot.app_state.worker_pool.is_busy(worker_key):
-        worker = bot.app_state.worker_pool.get_worker(worker_key)
+    is_busy = bot.app_state.worker_pool.is_busy(worker_key)
+    worker = bot.app_state.worker_pool.get_worker(worker_key) if is_busy else None
+    if is_busy:
         if worker is None or worker.get_active_turn() is None:
             await message.reply("当前 turn 正在启动，请稍后再次发送消息。", mention_author=False)
             return
 
+    try:
+        attachments = await collect_supported_attachments(
+            message,
+            artifact_root=bot.app_state.artifact_service.artifact_root,
+        )
+    except Exception as exc:
+        logger.exception(
+            "thread.message.attachments_failed",
+            error=str(exc),
+            thread_id=message.channel.id,
+            message_id=message.id,
+        )
+        await message.reply("读取当前消息里的图片附件失败，请稍后重试或重新上传。", mention_author=False)
+        return
+
+    input_items = build_message_input_items(
+        message_content=message.content,
+        attachments=attachments,
+    )
+    attachment_count = len(message.attachments)
+    supported_image_count = len(attachments)
+    audit_payload = {
+        "message_id": str(message.id),
+        "content_length": len(message.content),
+        "attachment_count": attachment_count,
+        "supported_image_count": supported_image_count,
+    }
+
+    if not input_items:
+        await message.reply(
+            "当前消息里没有可发送给 Codex 的文本或受支持图片附件。",
+            mention_author=False,
+        )
+        return
+
+    if is_busy:
         try:
-            turn_id = await worker.steer_text_turn(message.content)
+            turn_id = await worker.steer_turn(input_items)
         except Exception as exc:
             logger.exception("thread.message.steer_failed", error=str(exc), thread_id=message.channel.id)
             await message.reply(
@@ -56,7 +95,7 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
             guild_id=str(message.guild.id),
             discord_thread_id=str(message.channel.id),
             actor_id=str(message.author.id),
-            payload={"content_length": len(message.content), "turn_id": turn_id},
+            payload={**audit_payload, "turn_id": turn_id},
         )
         await message.reply(
             f"已追加到当前进行中的 Codex turn：`{turn_id}`",
@@ -152,7 +191,7 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
         guild_id=str(message.guild.id),
         discord_thread_id=str(message.channel.id),
         actor_id=str(message.author.id),
-        payload={"content_length": len(message.content)},
+        payload=audit_payload,
     )
 
     await bot.app_state.session_service.mark_running(
@@ -162,10 +201,10 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
 
     try:
         async with bot.app_state.worker_pool.lease(worker_key) as worker:
-            result = await worker.run_streamed_text_turn(
+            result = await worker.run_streamed_turn(
                 route.session,
                 route.workspace,
-                message.content,
+                input_items,
                 on_event=on_event,
                 on_approval_request=on_approval_request,
             )

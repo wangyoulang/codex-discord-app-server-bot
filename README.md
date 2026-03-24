@@ -35,7 +35,7 @@ uv run python scripts/dev.py
 2. 可选设置 `CODEX_HOME`；不设置时会直接复用当前机器上 `codex` 默认使用的 home 和 `config.toml`。
 3. 在 Discord 服务器里执行 `/codex project add`，把论坛频道绑定到项目根目录。
 4. 在该论坛频道中新建线程，执行 `/codex session new`。
-5. 直接在论坛线程里发消息即可。
+5. 直接在论坛线程里发文本消息或图片附件即可。
 6. 如果 Codex 正在执行，再发新消息会走 `turn/steer`；需要停止时可以点击“打断”按钮。
 
 目录结构：
@@ -49,8 +49,8 @@ uv run python scripts/dev.py
 
 当前功能边界：
 
-- 已支持：工作区注册、会话初始化、流式消息渲染、`turn/steer`、`turn/interrupt`
-- 未支持：附件输入、`review/start`
+- 已支持：工作区注册、会话初始化、流式消息渲染、图片附件输入、`turn/steer`、`turn/interrupt`
+- 未支持：非图片附件输入、`review/start`
 
 设计目标：
 

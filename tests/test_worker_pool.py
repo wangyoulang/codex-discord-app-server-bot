@@ -66,6 +66,40 @@ def test_worker_supports_steer_and_interrupt_on_active_turn() -> None:
     asyncio.run(scenario())
 
 
+def test_worker_supports_generic_input_items_for_steer() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.steer_calls: list[tuple[str, list[dict[str, str]], str]] = []
+
+        def turn_steer(
+            self,
+            thread_id: str,
+            input_items: list[dict[str, str]],
+            *,
+            expected_turn_id: str,
+        ) -> dict:
+            self.steer_calls.append((thread_id, input_items, expected_turn_id))
+            return {"turnId": expected_turn_id}
+
+    async def scenario() -> None:
+        settings = Settings(discord_bot_token="token")
+        worker = CodexWorker(settings, worker_key="thread-1")
+        fake_client = FakeClient()
+        worker._client = fake_client  # type: ignore[assignment]
+        worker._set_active_turn("thr_1", "turn_1")
+
+        input_items = [
+            {"type": "text", "text": "继续分析"},
+            {"type": "localImage", "path": "/tmp/example.webp"},
+        ]
+        steered_turn_id = await worker.steer_turn(input_items)
+
+        assert steered_turn_id == "turn_1"
+        assert fake_client.steer_calls == [("thr_1", input_items, "turn_1")]
+
+    asyncio.run(scenario())
+
+
 def test_worker_uses_only_cwd_overrides_for_local_codex_config() -> None:
     class FakeClient:
         def __init__(self) -> None:
@@ -136,6 +170,95 @@ def test_worker_uses_only_cwd_overrides_for_local_codex_config() -> None:
         assert result.turn_status == "completed"
         assert fake_client.thread_start_params == {"cwd": "/repo"}
         assert fake_client.turn_start_params == {"cwd": "/repo"}
+
+    asyncio.run(scenario())
+
+
+def test_worker_run_streamed_turn_supports_generic_input_items() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.thread_start_params: dict | None = None
+            self.turn_start_input: list[dict[str, str]] | None = None
+            self.turn_start_params: dict | None = None
+
+        def thread_start(self, params: dict) -> dict:
+            self.thread_start_params = params
+            return {"thread": {"id": "thr_1"}}
+
+        def turn_start(
+            self,
+            thread_id: str,
+            input_items: list[dict[str, str]],
+            *,
+            params: dict | None = None,
+        ) -> dict:
+            assert thread_id == "thr_1"
+            self.turn_start_input = input_items
+            self.turn_start_params = params
+            return {"turn": {"id": "turn_1"}}
+
+        def next_notification(self) -> Notification:
+            return Notification(
+                method="turn/completed",
+                payload={"threadId": "thr_1", "turn": {"id": "turn_1", "status": "completed"}},
+            )
+
+        def thread_read(self, thread_id: str, *, include_turns: bool) -> dict:
+            assert thread_id == "thr_1"
+            assert include_turns is True
+            return {
+                "thread": {
+                    "turns": [
+                        {
+                            "id": "turn_1",
+                            "items": [{"type": "agentMessage", "text": "已收到图片"}],
+                        }
+                    ]
+                }
+            }
+
+    async def noop_event(_event) -> None:
+        return None
+
+    async def noop_approval(_envelope) -> dict:
+        return {"decision": "decline"}
+
+    async def scenario() -> None:
+        settings = Settings(discord_bot_token="token")
+        worker = CodexWorker(settings, worker_key="thread-1")
+        fake_client = FakeClient()
+        worker._client = fake_client  # type: ignore[assignment]
+        session = DiscordSession(
+            discord_thread_id="discord_thread_1",
+            workspace_id=1,
+            status=SessionStatus.ready,
+        )
+        workspace = Workspace(
+            guild_id="guild_1",
+            forum_channel_id="forum_1",
+            name="demo",
+            cwd="/repo",
+        )
+        input_items = [
+            {"type": "text", "text": "请帮我看图"},
+            {"type": "localImage", "path": "/tmp/example.webp"},
+        ]
+
+        result = await worker.run_streamed_turn(
+            session,
+            workspace,
+            input_items,
+            on_event=noop_event,
+            on_approval_request=noop_approval,
+        )
+
+        assert result.thread_id == "thr_1"
+        assert result.turn_id == "turn_1"
+        assert result.final_text == "已收到图片"
+        assert result.turn_status == "completed"
+        assert fake_client.thread_start_params == {"cwd": "/repo"}
+        assert fake_client.turn_start_params == {"cwd": "/repo"}
+        assert fake_client.turn_start_input == input_items
 
     asyncio.run(scenario())
 
