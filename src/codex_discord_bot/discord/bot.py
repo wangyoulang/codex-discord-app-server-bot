@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from codex_discord_bot.discord.command_tree import register_commands
+from codex_discord_bot.discord.handlers.interactions import send_interaction_error
 from codex_discord_bot.discord.intents import build_intents
 from codex_discord_bot.discord.views.session_controls import SessionControlView
 from codex_discord_bot.logging import get_logger
@@ -25,6 +27,23 @@ class CodexDiscordBot(commands.Bot):
         self._closed = False
 
     async def setup_hook(self) -> None:
+        @self.tree.error
+        async def on_app_command_error(
+            interaction: discord.Interaction,
+            error: app_commands.AppCommandError,
+        ) -> None:
+            logger.exception(
+                "discord.app_command.failed",
+                command=getattr(interaction.command, "qualified_name", None),
+                channel_id=getattr(interaction.channel, "id", None),
+                guild_id=getattr(interaction.guild, "id", None),
+                error=str(error),
+            )
+            await send_interaction_error(
+                interaction,
+                f"命令执行失败：{error}",
+            )
+
         register_commands(self)
         self.add_view(self.session_control_view)
         task = self.loop.create_task(run_idle_worker_reaper(self.app_state))

@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codex_discord_bot.persistence.models import DiscordTurnOutput
+from codex_discord_bot.providers.types import ProviderKind
 
 
 class DiscordTurnOutputRepository:
@@ -21,12 +22,19 @@ class DiscordTurnOutputRepository:
         stmt = select(DiscordTurnOutput).where(DiscordTurnOutput.codex_turn_id == codex_turn_id)
         return await self.session.scalar(stmt)
 
-    async def get_latest_for_thread(self, discord_thread_id: str) -> DiscordTurnOutput | None:
+    async def get_latest_for_thread(
+        self,
+        discord_thread_id: str,
+        *,
+        provider: ProviderKind | None = None,
+    ) -> DiscordTurnOutput | None:
         stmt = (
             select(DiscordTurnOutput)
             .where(DiscordTurnOutput.discord_thread_id == discord_thread_id)
             .order_by(desc(DiscordTurnOutput.created_at), desc(DiscordTurnOutput.id))
         )
+        if provider is not None:
+            stmt = stmt.where(DiscordTurnOutput.provider == provider)
         return await self.session.scalar(stmt)
 
     async def save(self, record: DiscordTurnOutput) -> DiscordTurnOutput:

@@ -16,6 +16,7 @@ from sqlalchemy.orm import relationship
 from codex_discord_bot.persistence.enums import PendingRequestType
 from codex_discord_bot.persistence.enums import SessionStatus
 from codex_discord_bot.persistence.enums import TurnOutputState
+from codex_discord_bot.providers.types import ProviderKind
 from codex_discord_bot.utils.time import utc_now
 
 
@@ -47,6 +48,11 @@ class CodexThread(Base):
     __tablename__ = "codex_threads"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    provider: Mapped[ProviderKind] = mapped_column(
+        SqlEnum(ProviderKind, native_enum=False),
+        default=ProviderKind.codex,
+        nullable=False,
+    )
     codex_thread_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
     source_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -74,6 +80,11 @@ class DiscordSession(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     discord_thread_id: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
+    provider: Mapped[ProviderKind] = mapped_column(
+        SqlEnum(ProviderKind, native_enum=False),
+        default=ProviderKind.codex,
+        nullable=False,
+    )
     codex_thread_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     active_turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[SessionStatus] = mapped_column(
@@ -98,6 +109,11 @@ class DiscordTurnOutput(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     discord_thread_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[ProviderKind] = mapped_column(
+        SqlEnum(ProviderKind, native_enum=False),
+        default=ProviderKind.codex,
+        nullable=False,
+    )
     codex_thread_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     codex_turn_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     control_message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -125,6 +141,11 @@ class PendingRequest(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     request_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     discord_thread_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[ProviderKind] = mapped_column(
+        SqlEnum(ProviderKind, native_enum=False),
+        default=ProviderKind.codex,
+        nullable=False,
+    )
     codex_thread_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     item_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

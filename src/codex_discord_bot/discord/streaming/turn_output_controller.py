@@ -19,6 +19,7 @@ from codex_discord_bot.discord.streaming.preview_chunker import PreviewTextChunk
 from codex_discord_bot.discord.streaming.reply_delivery import send_text_pages
 from codex_discord_bot.logging import get_logger
 from codex_discord_bot.persistence.enums import TurnOutputState
+from codex_discord_bot.providers.types import ProviderKind
 from codex_discord_bot.services.turn_output_service import TurnOutputService
 
 logger = get_logger(__name__)
@@ -51,12 +52,16 @@ class TurnOutputController:
         turn_output_service: TurnOutputService,
         source_message: discord.Message,
         control_message: discord.Message,
+        provider_label: str = "Codex",
+        provider: ProviderKind | str = ProviderKind.codex,
     ) -> None:
         self.settings = settings
         self.turn_output_service = turn_output_service
         self.source_message = source_message
         self.thread = source_message.channel
         self.control_message = control_message
+        self.provider_label = provider_label
+        self.provider = provider
 
         self.codex_thread_id: str | None = None
         self.turn_id: str | None = None
@@ -95,6 +100,7 @@ class TurnOutputController:
         self.turn_id = turn_id
         await self.turn_output_service.start_turn(
             discord_thread_id=str(self.source_message.channel.id),
+            provider=self.provider,
             codex_thread_id=codex_thread_id,
             codex_turn_id=turn_id,
             control_message_id=str(self.control_message.id),
@@ -158,7 +164,7 @@ class TurnOutputController:
                 codex_turn_id=self.turn_id,
                 active_agent_item_id=None,
             )
-        await self._edit_control_message(f"Codex 执行失败：{error_text}")
+        await self._edit_control_message(f"{self.provider_label} 执行失败：{error_text}")
 
         last_message_id = str(self.control_message.id)
         if self._active_agent_item is not None and self._active_agent_item.preview_stream is not None:
@@ -188,14 +194,14 @@ class TurnOutputController:
                 active_agent_item_id=event.item_id,
             )
             await self._set_state(TurnOutputState.previewing)
-            await self._edit_control_message("Codex 正在输出回复...")
+            await self._edit_control_message(f"{self.provider_label} 正在输出回复...")
             return
 
         label = {
-            "reasoning": "Codex 正在思考...",
-            "commandExecution": "Codex 正在执行命令...",
-            "fileChange": "Codex 正在生成文件修改...",
-            "mcpToolCall": "Codex 正在调用工具...",
+            "reasoning": f"{self.provider_label} 正在思考...",
+            "commandExecution": f"{self.provider_label} 正在执行命令...",
+            "fileChange": f"{self.provider_label} 正在生成文件修改...",
+            "mcpToolCall": f"{self.provider_label} 正在调用工具...",
         }.get(event.item_type)
         if label is not None:
             await self._edit_control_message(label)
@@ -291,12 +297,12 @@ class TurnOutputController:
 
     def _build_control_summary(self, state: TurnOutputState, page_count: int) -> str:
         if state == TurnOutputState.completed:
-            return f"Codex 已完成，正文共 {page_count} 页。"
+            return f"{self.provider_label} 已完成，正文共 {page_count} 页。"
         if state == TurnOutputState.interrupted:
-            return f"Codex 已中断，已保留 {page_count} 页输出。"
+            return f"{self.provider_label} 已中断，已保留 {page_count} 页输出。"
         if state == TurnOutputState.failed:
-            return f"Codex 执行失败，已保留 {page_count} 页输出。"
-        return "Codex 正在处理..."
+            return f"{self.provider_label} 执行失败，已保留 {page_count} 页输出。"
+        return f"{self.provider_label} 正在处理..."
 
     def _reply_target_for_new_messages(self) -> discord.Message | None:
         if self.settings.discord_reply_to_mode == "none":

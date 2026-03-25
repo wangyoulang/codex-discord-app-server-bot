@@ -7,6 +7,7 @@ from typing import Any
 from codex_discord_bot.persistence.db import Database
 from codex_discord_bot.persistence.models import CodexThread
 from codex_discord_bot.persistence.repositories.codex_threads import CodexThreadRepository
+from codex_discord_bot.providers.types import ProviderKind
 from codex_discord_bot.utils.time import utc_now
 
 
@@ -14,10 +15,15 @@ class CodexThreadService:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    async def get_by_codex_thread_id(self, codex_thread_id: str) -> CodexThread | None:
+    async def get_by_codex_thread_id(
+        self,
+        codex_thread_id: str,
+        *,
+        provider: ProviderKind = ProviderKind.codex,
+    ) -> CodexThread | None:
         async with self.db.session() as session:
             repo = CodexThreadRepository(session)
-            return await repo.get_by_codex_thread_id(codex_thread_id)
+            return await repo.get_by_provider_thread_id(codex_thread_id, provider=provider)
 
     async def bind_thread_to_discord(
         self,
@@ -25,12 +31,14 @@ class CodexThreadService:
         codex_thread_id: str,
         workspace_id: int,
         discord_thread_id: str,
+        provider: ProviderKind = ProviderKind.codex,
     ) -> CodexThread:
         async with self.db.session() as session:
             repo = CodexThreadRepository(session)
-            record = await repo.get_by_codex_thread_id(codex_thread_id)
+            record = await repo.get_by_provider_thread_id(codex_thread_id, provider=provider)
             if record is None:
                 record = CodexThread(
+                    provider=provider,
                     codex_thread_id=codex_thread_id,
                     workspace_id=workspace_id,
                     source_label="unknown",
@@ -53,10 +61,11 @@ class CodexThreadService:
         *,
         codex_thread_id: str,
         archived: bool,
+        provider: ProviderKind = ProviderKind.codex,
     ) -> CodexThread:
         async with self.db.session() as session:
             repo = CodexThreadRepository(session)
-            record = await repo.get_by_codex_thread_id(codex_thread_id)
+            record = await repo.get_by_provider_thread_id(codex_thread_id, provider=provider)
             if record is None:
                 raise ValueError("Codex 会话不存在，无法更新归档状态。")
             record.archived = archived
@@ -67,6 +76,7 @@ class CodexThreadService:
         self,
         *,
         workspace_id: int,
+        provider: ProviderKind = ProviderKind.codex,
         scope: str,
         query: str | None = None,
         archived: bool = False,
@@ -77,6 +87,7 @@ class CodexThreadService:
             source_label = "discord-bot" if scope == "bot" else None
             return await repo.list_for_workspace(
                 workspace_id=workspace_id,
+                provider=provider,
                 source_label=source_label,
                 query=query,
                 archived=archived,
@@ -89,6 +100,7 @@ class CodexThreadService:
         workspace_id: int,
         thread_payload: dict[str, Any],
         archived: bool,
+        provider: ProviderKind = ProviderKind.codex,
     ) -> CodexThread:
         codex_thread_id = thread_payload.get("id")
         if not isinstance(codex_thread_id, str) or not codex_thread_id:
@@ -102,9 +114,10 @@ class CodexThreadService:
 
         async with self.db.session() as session:
             repo = CodexThreadRepository(session)
-            record = await repo.get_by_codex_thread_id(codex_thread_id)
+            record = await repo.get_by_provider_thread_id(codex_thread_id, provider=provider)
             if record is None:
                 record = CodexThread(
+                    provider=provider,
                     codex_thread_id=codex_thread_id,
                     workspace_id=workspace_id,
                     source_kind=source_kind,
@@ -134,6 +147,7 @@ class CodexThreadService:
         workspace_id: int,
         thread_payloads: list[dict[str, Any]],
         archived: bool,
+        provider: ProviderKind = ProviderKind.codex,
     ) -> list[CodexThread]:
         records: list[CodexThread] = []
         for payload in thread_payloads:
@@ -143,6 +157,7 @@ class CodexThreadService:
                         workspace_id=workspace_id,
                         thread_payload=payload,
                         archived=archived,
+                        provider=provider,
                     )
                 )
             except ValueError:
@@ -155,12 +170,14 @@ class CodexThreadService:
         workspace_id: int,
         codex_thread_id: str,
         discord_thread_id: str,
+        provider: ProviderKind = ProviderKind.codex,
     ) -> CodexThread:
         async with self.db.session() as session:
             repo = CodexThreadRepository(session)
-            record = await repo.get_by_codex_thread_id(codex_thread_id)
+            record = await repo.get_by_provider_thread_id(codex_thread_id, provider=provider)
             if record is None:
                 record = CodexThread(
+                    provider=provider,
                     codex_thread_id=codex_thread_id,
                     workspace_id=workspace_id,
                     source_label="unknown",
@@ -191,10 +208,11 @@ class CodexThreadService:
         *,
         codex_thread_id: str,
         discord_thread_id: str,
+        provider: ProviderKind = ProviderKind.codex,
     ) -> CodexThread | None:
         async with self.db.session() as session:
             repo = CodexThreadRepository(session)
-            record = await repo.get_by_codex_thread_id(codex_thread_id)
+            record = await repo.get_by_provider_thread_id(codex_thread_id, provider=provider)
             if record is None:
                 return None
             if record.bound_discord_thread_id != discord_thread_id:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from codex_discord_bot.claude.client_factory import validate_claude_runtime
 from codex_discord_bot.config import Settings
 from codex_discord_bot.config import load_settings
 from codex_discord_bot.persistence.db import Database
@@ -56,6 +57,7 @@ class ApplicationContext:
 
 async def build_application_context() -> ApplicationContext:
     settings = load_settings()
+    validate_claude_runtime(settings)
     db = Database(settings.database_url)
 
     return ApplicationContext(

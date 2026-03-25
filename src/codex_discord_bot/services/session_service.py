@@ -4,6 +4,7 @@ from codex_discord_bot.persistence.db import Database
 from codex_discord_bot.persistence.enums import SessionStatus
 from codex_discord_bot.persistence.models import DiscordSession
 from codex_discord_bot.persistence.repositories.sessions import DiscordSessionRepository
+from codex_discord_bot.providers.types import ProviderKind
 
 
 class SessionService:
@@ -15,15 +16,21 @@ class SessionService:
         *,
         discord_thread_id: str,
         workspace_id: int,
+        provider: ProviderKind = ProviderKind.codex,
     ) -> DiscordSession:
         async with self.db.session() as session:
             repo = DiscordSessionRepository(session)
             existing = await repo.get_by_discord_thread_id(discord_thread_id)
             if existing is not None:
+                if existing.provider != provider:
+                    if existing.codex_thread_id is not None:
+                        raise ValueError("当前线程已绑定其他 provider 会话，请先执行 detach。")
+                    existing = await repo.update_provider(existing, provider=provider)
                 return existing
             value = DiscordSession(
                 discord_thread_id=discord_thread_id,
                 workspace_id=workspace_id,
+                provider=provider,
                 status=SessionStatus.ready,
             )
             return await repo.create(value)
@@ -33,22 +40,36 @@ class SessionService:
             repo = DiscordSessionRepository(session)
             return await repo.get_by_discord_thread_id(discord_thread_id)
 
-    async def get_session_for_codex_thread(self, codex_thread_id: str) -> DiscordSession | None:
+    async def get_session_for_provider_thread(
+        self,
+        provider_thread_id: str,
+        *,
+        provider: ProviderKind,
+    ) -> DiscordSession | None:
         async with self.db.session() as session:
             repo = DiscordSessionRepository(session)
-            return await repo.get_by_codex_thread_id(codex_thread_id)
+            return await repo.get_by_provider_thread_id(provider_thread_id, provider=provider)
+
+    async def get_session_for_codex_thread(self, codex_thread_id: str) -> DiscordSession | None:
+        return await self.get_session_for_provider_thread(
+            codex_thread_id,
+            provider=ProviderKind.codex,
+        )
 
     async def bind_codex_thread(
         self,
         *,
         discord_thread_id: str,
         codex_thread_id: str | None,
+        provider: ProviderKind = ProviderKind.codex,
     ) -> DiscordSession:
         async with self.db.session() as session:
             repo = DiscordSessionRepository(session)
             record = await repo.get_by_discord_thread_id(discord_thread_id)
             if record is None:
                 raise ValueError("会话不存在，无法绑定 Codex thread")
+            if record.provider != provider:
+                record = await repo.update_provider(record, provider=provider)
             return await repo.update_codex_thread_id(record, codex_thread_id=codex_thread_id)
 
     async def detach_codex_thread(

@@ -4,6 +4,7 @@ from codex_discord_bot.persistence.db import Database
 from codex_discord_bot.persistence.enums import TurnOutputState
 from codex_discord_bot.persistence.models import DiscordTurnOutput
 from codex_discord_bot.persistence.repositories.turn_outputs import DiscordTurnOutputRepository
+from codex_discord_bot.providers.types import ProviderKind
 
 
 class TurnOutputService:
@@ -14,6 +15,7 @@ class TurnOutputService:
         self,
         *,
         discord_thread_id: str,
+        provider: ProviderKind = ProviderKind.codex,
         codex_thread_id: str | None,
         codex_turn_id: str,
         control_message_id: str | None,
@@ -29,6 +31,7 @@ class TurnOutputService:
 
             value = DiscordTurnOutput(
                 discord_thread_id=discord_thread_id,
+                provider=provider,
                 codex_thread_id=codex_thread_id,
                 codex_turn_id=codex_turn_id,
                 control_message_id=control_message_id,
@@ -38,10 +41,15 @@ class TurnOutputService:
             )
             return await repo.create(value)
 
-    async def get_latest_for_thread(self, discord_thread_id: str) -> DiscordTurnOutput | None:
+    async def get_latest_for_thread(
+        self,
+        discord_thread_id: str,
+        *,
+        provider: ProviderKind | None = None,
+    ) -> DiscordTurnOutput | None:
         async with self.db.session() as session:
             repo = DiscordTurnOutputRepository(session)
-            return await repo.get_latest_for_thread(discord_thread_id)
+            return await repo.get_latest_for_thread(discord_thread_id, provider=provider)
 
     async def get_by_turn_id(self, codex_turn_id: str) -> DiscordTurnOutput | None:
         async with self.db.session() as session:

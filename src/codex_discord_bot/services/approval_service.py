@@ -9,6 +9,7 @@ from codex_discord_bot.persistence.db import Database
 from codex_discord_bot.persistence.enums import PendingRequestType
 from codex_discord_bot.persistence.models import PendingRequest
 from codex_discord_bot.persistence.repositories.pending_requests import PendingRequestRepository
+from codex_discord_bot.providers.types import ProviderKind
 
 
 @dataclass(slots=True)
@@ -37,6 +38,7 @@ class ApprovalService:
         self,
         *,
         local_request_id: str,
+        provider: ProviderKind = ProviderKind.codex,
         request_type: str,
         title: str,
         body: str,
@@ -69,6 +71,7 @@ class ApprovalService:
                 PendingRequest(
                     request_id=local_request_id,
                     discord_thread_id=thread_id or "",
+                    provider=provider,
                     codex_thread_id=None,
                     turn_id=turn_id,
                     item_id=item_id,

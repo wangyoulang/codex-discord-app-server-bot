@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from codex_discord_bot.persistence.enums import SessionStatus
 from codex_discord_bot.persistence.models import DiscordSession
+from codex_discord_bot.providers.types import ProviderKind
 
 
 class DiscordSessionRepository:
@@ -21,9 +22,28 @@ class DiscordSessionRepository:
         stmt = select(DiscordSession).where(DiscordSession.discord_thread_id == discord_thread_id)
         return await self.session.scalar(stmt)
 
-    async def get_by_codex_thread_id(self, codex_thread_id: str) -> DiscordSession | None:
-        stmt = select(DiscordSession).where(DiscordSession.codex_thread_id == codex_thread_id)
+    async def get_by_provider_thread_id(
+        self,
+        provider_thread_id: str,
+        *,
+        provider: ProviderKind,
+    ) -> DiscordSession | None:
+        stmt = select(DiscordSession).where(
+            DiscordSession.codex_thread_id == provider_thread_id,
+            DiscordSession.provider == provider,
+        )
         return await self.session.scalar(stmt)
+
+    async def update_provider(
+        self,
+        record: DiscordSession,
+        *,
+        provider: ProviderKind,
+    ) -> DiscordSession:
+        record.provider = provider
+        await self.session.flush()
+        await self.session.refresh(record)
+        return record
 
     async def update_codex_thread_id(
         self,

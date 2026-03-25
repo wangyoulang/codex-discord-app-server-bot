@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Callable
 
 from codex_discord_bot.codex.worker import CodexWorker
 from codex_discord_bot.config import Settings
@@ -11,14 +12,22 @@ from codex_discord_bot.utils.time import utc_now
 
 @dataclass(slots=True)
 class WorkerEntry:
-    worker: CodexWorker
+    worker: object
     lock: asyncio.Lock
     last_used_at: object
 
 
 class WorkerPool:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        worker_factory: Callable[[str], object] | None = None,
+    ) -> None:
         self.settings = settings
+        self._worker_factory = worker_factory or (
+            lambda worker_key: CodexWorker(self.settings, worker_key=worker_key)
+        )
         self._entries: dict[str, WorkerEntry] = {}
         self._manager_lock = asyncio.Lock()
 
@@ -27,7 +36,7 @@ class WorkerPool:
             entry = self._entries.get(worker_key)
             if entry is not None:
                 return entry
-            worker = CodexWorker(self.settings, worker_key=worker_key)
+            worker = self._worker_factory(worker_key)
             entry = WorkerEntry(
                 worker=worker,
                 lock=asyncio.Lock(),
@@ -51,7 +60,7 @@ class WorkerPool:
     def has_worker(self, worker_key: str) -> bool:
         return worker_key in self._entries
 
-    def get_worker(self, worker_key: str) -> CodexWorker | None:
+    def get_worker(self, worker_key: str) -> object | None:
         entry = self._entries.get(worker_key)
         if entry is None:
             return None

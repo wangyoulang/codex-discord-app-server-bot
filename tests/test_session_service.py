@@ -10,6 +10,7 @@ from codex_discord_bot.persistence.models import Base
 from codex_discord_bot.persistence.models import Workspace
 from codex_discord_bot.persistence.repositories.workspaces import WorkspaceRepository
 from codex_discord_bot.persistence.db import Database
+from codex_discord_bot.providers.types import ProviderKind
 from codex_discord_bot.services.session_service import SessionService
 
 
@@ -78,6 +79,54 @@ def test_session_service_tracks_active_turn_lifecycle(tmp_path: Path) -> None:
         assert detached.codex_thread_id is None
         assert detached.status == SessionStatus.ready
         assert await service.get_session_for_codex_thread("codex_thread_1") is None
+
+        await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_session_service_rejects_switching_provider_when_existing_thread_bound(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
+        db = Database(database_url)
+        engine = create_async_engine(database_url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+        async with db.session() as session:
+            repo = WorkspaceRepository(session)
+            workspace = await repo.create(
+                Workspace(
+                    guild_id="guild_1",
+                    forum_channel_id="forum_1",
+                    name="demo",
+                    cwd="/repo",
+                )
+            )
+
+        service = SessionService(db)
+        await service.ensure_session(
+            discord_thread_id="discord_thread_1",
+            workspace_id=workspace.id,
+            provider=ProviderKind.codex,
+        )
+        await service.bind_codex_thread(
+            discord_thread_id="discord_thread_1",
+            codex_thread_id="codex_thread_1",
+            provider=ProviderKind.codex,
+        )
+
+        try:
+            await service.ensure_session(
+                discord_thread_id="discord_thread_1",
+                workspace_id=workspace.id,
+                provider=ProviderKind.claude,
+            )
+        except ValueError as exc:
+            assert "其他 provider 会话" in str(exc)
+        else:
+            raise AssertionError("期望切换 provider 时抛出 ValueError")
 
         await db.close()
 

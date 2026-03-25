@@ -4,10 +4,13 @@ import discord
 from discord import app_commands
 
 from codex_discord_bot.discord.handlers.interactions import send_interaction_error
+from codex_discord_bot.providers.types import ProviderKind
+from codex_discord_bot.providers.types import provider_display_name
 
 
-def build_group(app_state) -> app_commands.Group:
-    group = app_commands.Group(name="project", description="项目与工作区管理")
+def build_group(app_state, provider: ProviderKind) -> app_commands.Group:
+    provider_label = provider_display_name(provider)
+    group = app_commands.Group(name="project", description=f"{provider_label} 项目与工作区管理")
 
     @group.command(name="add", description="注册论坛频道为工作区")
     @app_commands.describe(

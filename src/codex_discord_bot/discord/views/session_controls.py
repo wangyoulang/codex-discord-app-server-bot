@@ -3,6 +3,7 @@ from __future__ import annotations
 import discord
 
 from codex_discord_bot.discord.handlers.interactions import send_interaction_error
+from codex_discord_bot.providers.types import provider_display_name
 
 
 class SessionControlView(discord.ui.View):
@@ -25,19 +26,24 @@ class SessionControlView(discord.ui.View):
             await interaction.response.send_message("当前线程还没有会话记录。", ephemeral=True)
             return
 
-        worker = self.app_state.worker_pool.get_worker(str(interaction.channel.id))
+        provider_label = provider_display_name(session.provider)
+        worker = self.app_state.worker_pool.get_worker(session.provider, str(interaction.channel.id))
         active_turn = worker.get_active_turn() if worker is not None else None
-        codex_thread = None
+        provider_thread = None
         if session.codex_thread_id is not None:
-            codex_thread = await self.app_state.codex_thread_service.get_by_codex_thread_id(session.codex_thread_id)
+            provider_thread = await self.app_state.codex_thread_service.get_by_codex_thread_id(
+                session.codex_thread_id,
+                provider=session.provider,
+            )
         await interaction.response.send_message(
             "\n".join(
                 [
+                    f"provider: `{session.provider.value}`",
                     f"discord_thread_id: `{session.discord_thread_id}`",
-                    f"codex_thread_id: `{session.codex_thread_id or '未创建'}`",
-                    f"codex_source: `{codex_thread.source_label if codex_thread is not None and codex_thread.source_label else '未知'}`",
-                    f"codex_archived: `{codex_thread.archived if codex_thread is not None else '未知'}`",
-                    f"codex_bound_thread_id: `{codex_thread.bound_discord_thread_id if codex_thread is not None and codex_thread.bound_discord_thread_id is not None else '无'}`",
+                    f"provider_thread_id: `{session.codex_thread_id or '未创建'}`",
+                    f"source: `{provider_thread.source_label if provider_thread is not None and provider_thread.source_label else '未知'}`",
+                    f"archived: `{provider_thread.archived if provider_thread is not None else '未知'}`",
+                    f"bound_thread_id: `{provider_thread.bound_discord_thread_id if provider_thread is not None and provider_thread.bound_discord_thread_id is not None else '无'}`",
                     f"status: `{session.status.value}`",
                     f"active_turn_id: `{session.active_turn_id or '无'}`",
                     f"live_active_turn_id: `{active_turn.turn_id if active_turn is not None else '无'}`",
@@ -62,7 +68,13 @@ class SessionControlView(discord.ui.View):
             await send_interaction_error(interaction, "请在论坛线程中使用会话控制按钮。")
             return
 
-        worker = self.app_state.worker_pool.get_worker(str(interaction.channel.id))
+        session = await self.app_state.session_service.get_session_for_thread(str(interaction.channel.id))
+        if session is None:
+            await interaction.response.send_message("当前线程没有可打断的运行中 turn。", ephemeral=True)
+            return
+
+        provider_label = provider_display_name(session.provider)
+        worker = self.app_state.worker_pool.get_worker(session.provider, str(interaction.channel.id))
         if worker is None:
             await interaction.response.send_message("当前线程没有可打断的运行中 turn。", ephemeral=True)
             return
@@ -84,9 +96,9 @@ class SessionControlView(discord.ui.View):
             guild_id=str(interaction.guild.id) if interaction.guild is not None else None,
             discord_thread_id=str(interaction.channel.id),
             actor_id=str(interaction.user.id),
-            payload={"turn_id": interrupted_turn_id},
+            payload={"provider": session.provider.value, "turn_id": interrupted_turn_id},
         )
         await interaction.response.send_message(
-            f"已请求打断当前 turn：`{interrupted_turn_id}`",
+            f"已请求打断当前 {provider_label} turn：`{interrupted_turn_id}`",
             ephemeral=True,
         )
