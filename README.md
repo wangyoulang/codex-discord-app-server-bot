@@ -10,6 +10,7 @@
 - 已支持 Codex 原生 `turn/steer`、`turn/interrupt`
 - 已支持 Claude 基于本地 `claude` CLI 的流式会话与会话恢复
 - 已支持 Claude 默认走 API Key 模式，并可选接第三方兼容网关 `base_url`
+- 已支持通过 `.env` 显式控制 Claude `thinking`、额外 env 透传与额外 CLI 参数透传
 
 文档入口：
 
@@ -38,12 +39,14 @@ uv run python scripts/dev.py
 2. 可选设置 `CODEX_HOME`；不设置时会直接复用当前机器上 `codex` 默认使用的 home 和 `config.toml`。
 3. 若要启用 Claude，请设置 `ENABLE_CLAUDE_COMMAND=true`，并至少配置 `CLAUDE_API_KEY`。
 4. 若要让 Claude 走第三方网关，可额外设置 `CLAUDE_BASE_URL` 与 `CLAUDE_CUSTOM_HEADERS_JSON`。
-5. 在 Discord 服务器里执行 `/codex project add` 或 `/claude project add`，把论坛频道绑定到项目根目录。
-6. 在该论坛频道中新建线程，执行 `/codex session new` 或 `/claude session new`。
-7. 若需要恢复历史会话，可执行对应 provider 的 `session list` 与 `session resume`。
-8. 若需要会话整理，可执行对应 provider 的 `session detach`、`session archive`、`session unarchive`。
-9. 直接在论坛线程里发文本消息或图片附件即可。
-10. 如果 Codex 正在执行，再发新消息会走 `turn/steer`；Claude 当前默认不支持运行中追加输入，需等待完成或先打断。
+5. 若要显式覆盖本机 Claude 的思考配置，可设置 `CLAUDE_THINKING_MODE`，当值为 `enabled` 时还需设置 `CLAUDE_THINKING_BUDGET_TOKENS`。
+6. 若要把 `~/.claude/settings.json` 里的 `env` 或额外 CLI 标志同步到 bot，可设置 `CLAUDE_EXTRA_ENV_JSON` 与 `CLAUDE_EXTRA_ARGS_JSON`。
+7. 在 Discord 服务器里执行 `/codex project add` 或 `/claude project add`，把论坛频道绑定到项目根目录。
+8. 在该论坛频道中新建线程，执行 `/codex session new` 或 `/claude session new`。
+9. 若需要恢复历史会话，可执行对应 provider 的 `session list` 与 `session resume`。
+10. 若需要会话整理，可执行对应 provider 的 `session detach`、`session archive`、`session unarchive`。
+11. 直接在论坛线程里发文本消息或图片附件即可。
+12. 如果 Codex 正在执行，再发新消息会走 `turn/steer`；Claude 当前默认不支持运行中追加输入，需等待完成或先打断。
 
 目录结构：
 

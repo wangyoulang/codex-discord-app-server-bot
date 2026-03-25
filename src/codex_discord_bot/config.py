@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+from typing import Any
 from typing import Literal
 
 from pydantic import Field
 from pydantic import field_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
@@ -50,6 +52,8 @@ class Settings(BaseSettings):
     ] = "default"
     claude_setting_sources: str = "user,project,local"
     claude_include_partial_messages: bool = True
+    claude_thinking_mode: Literal["adaptive", "enabled", "disabled"] | None = None
+    claude_thinking_budget_tokens: int | None = None
     claude_auth_mode: Literal[
         "api_key",
         "auth_token",
@@ -61,6 +65,8 @@ class Settings(BaseSettings):
     claude_auth_token: str | None = None
     claude_base_url: str | None = None
     claude_custom_headers_json: str | None = None
+    claude_extra_env_json: str | None = None
+    claude_extra_args_json: str | None = None
     claude_use_bedrock: bool = False
     claude_bedrock_base_url: str | None = None
     claude_skip_bedrock_auth: bool = False
@@ -83,18 +89,49 @@ class Settings(BaseSettings):
     discord_final_max_lines_per_message: int = 17
     discord_reply_to_mode: Literal["none", "first", "all"] = "first"
 
-    @field_validator("claude_custom_headers_json")
+    @field_validator("claude_custom_headers_json", "claude_extra_env_json")
     @classmethod
-    def validate_claude_custom_headers_json(cls, value: str | None) -> str | None:
+    def validate_string_map_json(cls, value: str | None) -> str | None:
         if value is None or not value.strip():
             return None
         parsed = json.loads(value)
         if not isinstance(parsed, dict):
-            raise ValueError("CLAUDE_CUSTOM_HEADERS_JSON 必须是 JSON 对象")
+            raise ValueError("Claude JSON 配置必须是 JSON 对象")
         for key, item in parsed.items():
             if not isinstance(key, str) or not isinstance(item, str):
-                raise ValueError("CLAUDE_CUSTOM_HEADERS_JSON 只能包含字符串键值")
+                raise ValueError("Claude JSON 配置只能包含字符串键值")
         return value
+
+    @field_validator("claude_extra_args_json")
+    @classmethod
+    def validate_claude_extra_args_json(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        parsed = json.loads(value)
+        if not isinstance(parsed, dict):
+            raise ValueError("CLAUDE_EXTRA_ARGS_JSON 必须是 JSON 对象")
+        for key, item in parsed.items():
+            if not isinstance(key, str):
+                raise ValueError("CLAUDE_EXTRA_ARGS_JSON 的键必须是字符串")
+            if item is not None and not isinstance(item, str):
+                raise ValueError("CLAUDE_EXTRA_ARGS_JSON 的值只能是字符串或 null")
+        return value
+
+    @model_validator(mode="after")
+    def validate_claude_thinking_options(self) -> "Settings":
+        if self.claude_thinking_budget_tokens is not None and self.claude_thinking_budget_tokens <= 0:
+            raise ValueError("CLAUDE_THINKING_BUDGET_TOKENS 必须大于 0")
+
+        if self.claude_thinking_mode == "enabled":
+            if self.claude_thinking_budget_tokens is None:
+                raise ValueError("CLAUDE_THINKING_MODE=enabled 时必须设置 CLAUDE_THINKING_BUDGET_TOKENS")
+            return self
+
+        if self.claude_thinking_budget_tokens is not None:
+            raise ValueError(
+                "只有在 CLAUDE_THINKING_MODE=enabled 时才允许设置 CLAUDE_THINKING_BUDGET_TOKENS"
+            )
+        return self
 
     def parsed_claude_setting_sources(self) -> list[str]:
         return [item.strip() for item in self.claude_setting_sources.split(",") if item.strip()]
@@ -104,6 +141,33 @@ class Settings(BaseSettings):
             return {}
         parsed = json.loads(self.claude_custom_headers_json)
         return {str(key): str(value) for key, value in parsed.items()}
+
+    def parsed_claude_extra_env(self) -> dict[str, str]:
+        if self.claude_extra_env_json is None:
+            return {}
+        parsed = json.loads(self.claude_extra_env_json)
+        return {str(key): str(value) for key, value in parsed.items()}
+
+    def parsed_claude_extra_args(self) -> dict[str, str | None]:
+        if self.claude_extra_args_json is None:
+            return {}
+        parsed = json.loads(self.claude_extra_args_json)
+        return {
+            str(key): (str(value) if value is not None else None)
+            for key, value in parsed.items()
+        }
+
+    def parsed_claude_thinking(self) -> dict[str, Any] | None:
+        if self.claude_thinking_mode is None:
+            return None
+        if self.claude_thinking_mode == "adaptive":
+            return {"type": "adaptive"}
+        if self.claude_thinking_mode == "disabled":
+            return {"type": "disabled"}
+        return {
+            "type": "enabled",
+            "budget_tokens": self.claude_thinking_budget_tokens,
+        }
 
     def ensure_runtime_dirs(self) -> None:
         for path in (self.state_dir, self.artifact_dir, self.log_dir):

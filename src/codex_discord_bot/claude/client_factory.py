@@ -45,6 +45,10 @@ def build_claude_env(settings: Settings) -> dict[str, str]:
             f"{name}: {value}" for name, value in headers.items()
         )
 
+    extra_env = settings.parsed_claude_extra_env()
+    if extra_env:
+        env.update(extra_env)
+
     return env
 
 
@@ -74,6 +78,12 @@ def build_claude_options(
         "effort": settings.claude_effort,
         "can_use_tool": can_use_tool,
     }
+    thinking = settings.parsed_claude_thinking()
+    if thinking is not None:
+        option_kwargs["thinking"] = thinking
+    extra_args = settings.parsed_claude_extra_args()
+    if extra_args:
+        option_kwargs["extra_args"] = extra_args
     if resume_session_id:
         option_kwargs["resume"] = resume_session_id
     return ClaudeAgentOptions(**option_kwargs)
