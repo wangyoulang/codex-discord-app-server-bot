@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from codex_discord_bot.claude.client_factory import build_claude_options
 from codex_discord_bot.claude.client_factory import build_claude_env
+from codex_discord_bot.claude.client_factory import ensure_managed_claude_settings_file
 from codex_discord_bot.claude.client_factory import validate_claude_runtime
 from codex_discord_bot.config import Settings
 
@@ -64,6 +68,53 @@ def test_build_claude_options_supports_thinking_and_extra_args() -> None:
     assert options.extra_args == {"--output-format": "json", "--verbose": None}
 
 
+def test_build_claude_options_auto_allow_uses_managed_settings(tmp_path: Path) -> None:
+    settings = Settings(
+        discord_bot_token="token",
+        enable_claude_command=True,
+        claude_auth_mode="api_key",
+        claude_api_key="test-api-key",
+        state_dir=tmp_path,
+        claude_approval_policy="auto_allow",
+        claude_settings_mode="managed",
+    )
+
+    options = build_claude_options(
+        settings,
+        cwd="/repo",
+        resume_session_id=None,
+        can_use_tool=lambda *_args, **_kwargs: None,
+    )
+
+    assert options.permission_mode == "bypassPermissions"
+    assert options.can_use_tool is not None
+    assert options.setting_sources is None
+    assert options.settings is not None
+    managed_path = Path(options.settings)
+    payload = json.loads(managed_path.read_text(encoding="utf-8"))
+    assert payload == {"permissions": {"defaultMode": "bypassPermissions"}}
+
+
+def test_ensure_managed_claude_settings_file_uses_custom_path(tmp_path: Path) -> None:
+    target = tmp_path / "claude" / "managed.json"
+    settings = Settings(
+        discord_bot_token="token",
+        enable_claude_command=True,
+        claude_auth_mode="api_key",
+        claude_api_key="test-api-key",
+        claude_approval_policy="discord",
+        claude_permission_mode="default",
+        claude_settings_mode="managed",
+        claude_managed_settings_path=target,
+    )
+
+    generated = ensure_managed_claude_settings_file(settings)
+
+    assert generated == target
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload == {"permissions": {"defaultMode": "default"}}
+
+
 def test_settings_require_budget_tokens_when_thinking_enabled() -> None:
     with pytest.raises(ValueError, match="CLAUDE_THINKING_BUDGET_TOKENS"):
         Settings(
@@ -72,6 +123,18 @@ def test_settings_require_budget_tokens_when_thinking_enabled() -> None:
             claude_auth_mode="api_key",
             claude_api_key="test-api-key",
             claude_thinking_mode="enabled",
+        )
+
+
+def test_settings_require_managed_mode_when_auto_allow() -> None:
+    with pytest.raises(ValueError, match="CLAUDE_SETTINGS_MODE=managed"):
+        Settings(
+            discord_bot_token="token",
+            enable_claude_command=True,
+            claude_auth_mode="api_key",
+            claude_api_key="test-api-key",
+            claude_approval_policy="auto_allow",
+            claude_settings_mode="inherited",
         )
 
 

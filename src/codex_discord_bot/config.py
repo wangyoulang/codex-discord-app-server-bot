@@ -44,12 +44,15 @@ class Settings(BaseSettings):
     claude_bin: str = "claude"
     claude_model: str = "sonnet"
     claude_effort: Literal["low", "medium", "high", "max"] = "medium"
+    claude_approval_policy: Literal["discord", "auto_allow"] = "discord"
     claude_permission_mode: Literal[
         "default",
         "acceptEdits",
         "plan",
         "bypassPermissions",
     ] = "default"
+    claude_settings_mode: Literal["inherited", "managed"] = "inherited"
+    claude_managed_settings_path: Path | None = None
     claude_setting_sources: str = "user,project,local"
     claude_include_partial_messages: bool = True
     claude_thinking_mode: Literal["adaptive", "enabled", "disabled"] | None = None
@@ -131,6 +134,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 "只有在 CLAUDE_THINKING_MODE=enabled 时才允许设置 CLAUDE_THINKING_BUDGET_TOKENS"
             )
+
+        if self.claude_approval_policy == "auto_allow" and self.claude_settings_mode != "managed":
+            raise ValueError(
+                "CLAUDE_APPROVAL_POLICY=auto_allow 时必须同时设置 CLAUDE_SETTINGS_MODE=managed"
+            )
         return self
 
     def parsed_claude_setting_sources(self) -> list[str]:
@@ -168,6 +176,11 @@ class Settings(BaseSettings):
             "type": "enabled",
             "budget_tokens": self.claude_thinking_budget_tokens,
         }
+
+    def resolved_claude_managed_settings_path(self) -> Path:
+        if self.claude_managed_settings_path is not None:
+            return self.claude_managed_settings_path
+        return self.state_dir / "claude-managed-settings.json"
 
     def ensure_runtime_dirs(self) -> None:
         for path in (self.state_dir, self.artifact_dir, self.log_dir):

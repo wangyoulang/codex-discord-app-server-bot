@@ -228,11 +228,15 @@ class ClaudeWorker:
             message = response.get("message") or "已拒绝当前工具调用。"
             return PermissionResultDeny(message=message)
 
+        tool_permission_callback = can_use_tool
+        if self.settings.claude_approval_policy == "auto_allow":
+            tool_permission_callback = None
+
         options = build_claude_options(
             self.settings,
             cwd=workspace.cwd,
             resume_session_id=session.codex_thread_id,
-            can_use_tool=can_use_tool,
+            can_use_tool=tool_permission_callback,
         )
 
         try:

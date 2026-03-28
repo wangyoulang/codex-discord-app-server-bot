@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -8,6 +9,27 @@ from codex_discord_bot.config import Settings
 
 if TYPE_CHECKING:
     from claude_agent_sdk import ClaudeAgentOptions
+
+
+def build_managed_claude_settings(settings: Settings) -> dict[str, object]:
+    permission_mode = settings.claude_permission_mode
+    if settings.claude_approval_policy == "auto_allow":
+        permission_mode = "bypassPermissions"
+    return {
+        "permissions": {
+            "defaultMode": permission_mode,
+        }
+    }
+
+
+def ensure_managed_claude_settings_file(settings: Settings) -> Path:
+    target_path = settings.resolved_claude_managed_settings_path()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(
+        json.dumps(build_managed_claude_settings(settings), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return target_path
 
 
 def build_claude_env(settings: Settings) -> dict[str, str]:
@@ -67,17 +89,24 @@ def build_claude_options(
         ) from exc
 
     env = build_claude_env(settings)
+    permission_mode = settings.claude_permission_mode
+    if settings.claude_approval_policy == "auto_allow":
+        permission_mode = "bypassPermissions"
     option_kwargs = {
         "cwd": cwd,
         "cli_path": settings.claude_bin,
         "model": settings.claude_model,
         "env": env,
-        "permission_mode": settings.claude_permission_mode,
-        "setting_sources": settings.parsed_claude_setting_sources(),
+        "permission_mode": permission_mode,
         "include_partial_messages": settings.claude_include_partial_messages,
         "effort": settings.claude_effort,
-        "can_use_tool": can_use_tool,
     }
+    if can_use_tool is not None:
+        option_kwargs["can_use_tool"] = can_use_tool
+    if settings.claude_settings_mode == "managed":
+        option_kwargs["settings"] = str(ensure_managed_claude_settings_file(settings))
+    else:
+        option_kwargs["setting_sources"] = settings.parsed_claude_setting_sources()
     thinking = settings.parsed_claude_thinking()
     if thinking is not None:
         option_kwargs["thinking"] = thinking
@@ -108,3 +137,5 @@ def validate_claude_runtime(settings: Settings) -> None:
         raise RuntimeError("已启用 /claude，但 CLAUDE_API_KEY 为空。")
     if settings.claude_auth_mode == "auth_token" and not settings.claude_auth_token:
         raise RuntimeError("已启用 /claude，但 CLAUDE_AUTH_TOKEN 为空。")
+    if settings.claude_settings_mode == "managed":
+        ensure_managed_claude_settings_file(settings)
