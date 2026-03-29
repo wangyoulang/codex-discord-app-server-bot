@@ -91,12 +91,46 @@ def test_build_claude_options_auto_allow_uses_managed_settings(tmp_path: Path) -
     assert options.setting_sources is None
     assert options.settings is not None
     managed_path = Path(options.settings)
+    assert managed_path.is_absolute()
+    assert managed_path.is_file()
     payload = json.loads(managed_path.read_text(encoding="utf-8"))
     assert payload == {"permissions": {"defaultMode": "bypassPermissions"}}
 
 
-def test_ensure_managed_claude_settings_file_uses_custom_path(tmp_path: Path) -> None:
-    target = tmp_path / "claude" / "managed.json"
+def test_build_claude_options_managed_settings_uses_absolute_path_for_relative_state_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    settings = Settings(
+        discord_bot_token="token",
+        enable_claude_command=True,
+        claude_auth_mode="api_key",
+        claude_api_key="test-api-key",
+        state_dir=Path("./state"),
+        claude_approval_policy="auto_allow",
+        claude_settings_mode="managed",
+    )
+
+    options = build_claude_options(
+        settings,
+        cwd="/repo",
+        resume_session_id=None,
+        can_use_tool=None,
+    )
+
+    managed_path = Path(options.settings)
+    assert managed_path == (tmp_path / "state" / "claude-managed-settings.json").resolve()
+    assert managed_path.is_absolute()
+    assert managed_path.is_file()
+
+
+def test_ensure_managed_claude_settings_file_uses_custom_relative_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    target = Path("claude/managed.json")
     settings = Settings(
         discord_bot_token="token",
         enable_claude_command=True,
@@ -110,8 +144,10 @@ def test_ensure_managed_claude_settings_file_uses_custom_path(tmp_path: Path) ->
 
     generated = ensure_managed_claude_settings_file(settings)
 
-    assert generated == target
-    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert generated == (tmp_path / target).resolve()
+    assert generated.is_absolute()
+    assert generated.is_file()
+    payload = json.loads(generated.read_text(encoding="utf-8"))
     assert payload == {"permissions": {"defaultMode": "default"}}
 
 

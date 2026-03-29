@@ -29,6 +29,8 @@ def ensure_managed_claude_settings_file(settings: Settings) -> Path:
         json.dumps(build_managed_claude_settings(settings), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    if not target_path.is_file():
+        raise RuntimeError(f"Claude managed settings 文件不存在：`{target_path}`")
     return target_path
 
 

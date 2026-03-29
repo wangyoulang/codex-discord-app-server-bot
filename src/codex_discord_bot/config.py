@@ -178,9 +178,10 @@ class Settings(BaseSettings):
         }
 
     def resolved_claude_managed_settings_path(self) -> Path:
-        if self.claude_managed_settings_path is not None:
-            return self.claude_managed_settings_path
-        return self.state_dir / "claude-managed-settings.json"
+        target = self.claude_managed_settings_path
+        if target is None:
+            target = self.state_dir / "claude-managed-settings.json"
+        return target.expanduser().resolve()
 
     def ensure_runtime_dirs(self) -> None:
         for path in (self.state_dir, self.artifact_dir, self.log_dir):
