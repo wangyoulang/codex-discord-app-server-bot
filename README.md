@@ -30,6 +30,51 @@ uv run python scripts/register_commands.py
 uv run python scripts/dev.py
 ```
 
+systemd 部署：
+
+- 当前项目的配置读取由应用自身完成，启动时会自动读取项目根目录下的 `.env`
+- 当前 service 直接执行 `scripts/dev.py`，与本地开发入口保持一致
+- 当前模板显式声明了 `PATH`，用于保证 `codex` CLI 在 systemd 环境下可被找到
+- 当前模板是面向本机环境的可用版本；如果迁移到其它机器，请同步调整用户、工作目录、Python 路径与 `PATH`
+
+1. 首次部署前准备：
+
+```bash
+uv sync
+cp .env.example .env
+uv run alembic upgrade head
+uv run python scripts/register_commands.py
+```
+
+2. 安装 systemd unit：
+
+```bash
+sudo install -D -m 0644 \
+  /home/wyl/.codex/codex-discord-app-server-bot/deploy/systemd/codex-discord-app-server-bot.service \
+  /etc/systemd/system/codex-discord-app-server-bot.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now codex-discord-app-server-bot.service
+```
+
+3. 日常运维命令：
+
+```bash
+systemctl status codex-discord-app-server-bot.service
+sudo systemctl restart codex-discord-app-server-bot.service
+sudo systemctl stop codex-discord-app-server-bot.service
+sudo systemctl start codex-discord-app-server-bot.service
+journalctl -u codex-discord-app-server-bot.service -f
+```
+
+4. 代码更新后的推荐流程：
+
+```bash
+git pull
+uv sync
+uv run alembic upgrade head
+sudo systemctl restart codex-discord-app-server-bot.service
+```
+
 使用说明：
 
 1. 在 `.env` 里配置 Discord token 和 application id。

@@ -250,6 +250,7 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
             workspace_id=route.workspace.id,
             thread_payload=thread_payload,
             archived=False,
+            source_override={"custom": "discord-bot"},
         )
         await bot.app_state.session_service.bind_codex_thread(
             discord_thread_id=str(message.channel.id),

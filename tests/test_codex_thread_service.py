@@ -156,3 +156,69 @@ def test_codex_thread_service_rejects_cross_thread_binding_takeover(tmp_path: Pa
         await db.close()
 
     asyncio.run(scenario())
+
+
+def test_codex_thread_service_preserves_local_discord_bot_source_label(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
+        db = Database(database_url)
+        engine = create_async_engine(database_url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+        async with db.session() as session:
+            repo = WorkspaceRepository(session)
+            workspace = await repo.create(
+                Workspace(
+                    guild_id="guild_1",
+                    forum_channel_id="forum_1",
+                    name="demo",
+                    cwd="/repo",
+                )
+            )
+
+        service = CodexThreadService(db)
+        created = await service.sync_thread_from_payload(
+            workspace_id=workspace.id,
+            archived=False,
+            thread_payload={
+                "id": "codex_thr_3",
+                "source": "vscode",
+                "preview": "首次创建",
+                "status": {"type": "idle"},
+                "createdAt": 1711270800,
+                "updatedAt": 1711271100,
+            },
+            source_override={"custom": "discord-bot"},
+        )
+        assert created.source_kind == "custom"
+        assert created.source_label == "discord-bot"
+
+        updated = await service.sync_thread_from_payload(
+            workspace_id=workspace.id,
+            archived=False,
+            thread_payload={
+                "id": "codex_thr_3",
+                "source": "vscode",
+                "preview": "再次同步",
+                "status": {"type": "idle"},
+                "createdAt": 1711270800,
+                "updatedAt": 1711271400,
+            },
+        )
+        assert updated.source_kind == "custom"
+        assert updated.source_label == "discord-bot"
+        assert updated.preview == "再次同步"
+
+        bot_records = await service.list_for_workspace(
+            workspace_id=workspace.id,
+            scope="bot",
+            archived=False,
+            limit=10,
+        )
+        assert [item.codex_thread_id for item in bot_records] == ["codex_thr_3"]
+
+        await db.close()
+
+    asyncio.run(scenario())

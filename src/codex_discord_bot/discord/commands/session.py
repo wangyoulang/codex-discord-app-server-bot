@@ -148,6 +148,7 @@ def build_group(app_state) -> app_commands.Group:
                 workspace_id=route.workspace.id,
                 thread_payload=thread_payload,
                 archived=False,
+                source_override={"custom": "discord-bot"},
             )
             await app_state.codex_thread_service.ensure_thread_available_for_discord(
                 workspace_id=route.workspace.id,

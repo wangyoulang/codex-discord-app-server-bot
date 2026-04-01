@@ -32,8 +32,10 @@ class Settings(BaseSettings):
 
     codex_bin: str | None = None
     codex_home: Path | None = None
-    codex_session_source: str = "discord-bot"
-
+    codex_http_proxy: str | None = None
+    codex_https_proxy: str | None = None
+    codex_all_proxy: str | None = None
+    codex_no_proxy: str | None = None
     worker_idle_timeout_seconds: int = 900
 
     discord_preview_mode: Literal["off", "partial", "block"] = "off"

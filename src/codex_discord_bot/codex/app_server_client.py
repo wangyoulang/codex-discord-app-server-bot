@@ -19,7 +19,6 @@ class AppServerConfig:
     codex_bin: str | None = None
     cwd: str | None = None
     env: dict[str, str] | None = None
-    session_source: str = "discord-bot"
     client_name: str = "codex_discord_bot"
     client_title: str = "Codex Discord Bot"
     client_version: str = "0.1.0"
@@ -52,14 +51,7 @@ class AppServerClient:
         if self._proc is not None:
             return
 
-        cmd = [
-            self.config.codex_bin or "codex",
-            "app-server",
-            "--listen",
-            "stdio://",
-            "--session-source",
-            self.config.session_source,
-        ]
+        cmd = self._build_command()
         env = os.environ.copy()
         if self.config.env:
             env.update(self.config.env)
@@ -81,6 +73,14 @@ class AppServerClient:
             daemon=True,
         )
         self._reader_thread.start()
+
+    def _build_command(self) -> list[str]:
+        return [
+            self.config.codex_bin or "codex",
+            "app-server",
+            "--listen",
+            "stdio://",
+        ]
 
     def close(self) -> None:
         if self._proc is None:

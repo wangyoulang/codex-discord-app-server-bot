@@ -89,12 +89,15 @@ class CodexThreadService:
         workspace_id: int,
         thread_payload: dict[str, Any],
         archived: bool,
+        source_override: object | None = None,
     ) -> CodexThread:
         codex_thread_id = thread_payload.get("id")
         if not isinstance(codex_thread_id, str) or not codex_thread_id:
             raise ValueError("thread payload 缺少 id")
 
-        source_kind, source_label = _normalize_thread_source(thread_payload.get("source"))
+        source_kind, source_label = _normalize_thread_source(
+            source_override if source_override is not None else thread_payload.get("source")
+        )
         preview = thread_payload.get("preview")
         status = _normalize_thread_status(thread_payload.get("status"))
         thread_created_at = _timestamp_to_utc(thread_payload.get("createdAt"))
@@ -118,8 +121,12 @@ class CodexThreadService:
                 return await repo.create(record)
 
             record.workspace_id = workspace_id
-            record.source_kind = source_kind or record.source_kind
-            record.source_label = source_label or record.source_label
+            if source_override is not None:
+                record.source_kind = source_kind or record.source_kind
+                record.source_label = source_label or record.source_label
+            elif record.source_label != "discord-bot":
+                record.source_kind = source_kind or record.source_kind
+                record.source_label = source_label or record.source_label
             if isinstance(preview, str) and preview:
                 record.preview = preview
             record.archived = archived

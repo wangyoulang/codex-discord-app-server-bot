@@ -1,0 +1,23 @@
+[Unit]
+Description=Codex Discord App Server Bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=wyl
+Group=wyl
+WorkingDirectory=/home/wyl/.codex/codex-discord-app-server-bot
+Environment=HOME=/home/wyl
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/wyl/.local/bin:/home/wyl/.nvm/versions/node/v25.2.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/wyl/.codex/codex-discord-app-server-bot/.venv/bin/python /home/wyl/.codex/codex-discord-app-server-bot/scripts/dev.py
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+SuccessExitStatus=130 SIGINT
+TimeoutStopSec=30
+SyslogIdentifier=codex-discord-bot
+
+[Install]
+WantedBy=multi-user.target
