@@ -1,11 +1,26 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 
 import discord
 from discord import app_commands
 
 from codex_discord_bot.discord.handlers.interactions import send_interaction_error
+
+
+def _normalize_workspace_cwd(value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return os.path.normcase(os.path.normpath(value))
+
+
+def _same_workspace_cwd(left: object, right: object) -> bool:
+    normalized_left = _normalize_workspace_cwd(left)
+    normalized_right = _normalize_workspace_cwd(right)
+    if normalized_left is None or normalized_right is None:
+        return False
+    return normalized_left == normalized_right
 
 
 def build_group(app_state) -> app_commands.Group:
@@ -306,7 +321,7 @@ def build_group(app_state) -> app_commands.Group:
             browser_key = f"session-browser:{route.workspace.id}"
             async with app_state.worker_pool.lease(browser_key) as browser:
                 thread_payload = await browser.read_thread(session, include_turns=False)
-            if thread_payload.get("cwd") != route.workspace.cwd:
+            if not _same_workspace_cwd(thread_payload.get("cwd"), route.workspace.cwd):
                 await send_interaction_error(interaction, "目标会话不属于当前工作区，无法恢复。")
                 return
 
@@ -517,7 +532,7 @@ def build_group(app_state) -> app_commands.Group:
             browser_key = f"session-browser:{route.workspace.id}"
             async with app_state.worker_pool.lease(browser_key) as browser:
                 thread_payload = await browser.unarchive_thread(session)
-            if thread_payload.get("cwd") != route.workspace.cwd:
+            if not _same_workspace_cwd(thread_payload.get("cwd"), route.workspace.cwd):
                 await send_interaction_error(interaction, "目标会话不属于当前工作区，无法取消归档。")
                 return
             record = await app_state.codex_thread_service.sync_thread_from_payload(
