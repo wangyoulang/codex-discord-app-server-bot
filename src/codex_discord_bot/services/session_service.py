@@ -24,7 +24,7 @@ class SessionService:
             value = DiscordSession(
                 discord_thread_id=discord_thread_id,
                 workspace_id=workspace_id,
-                status=SessionStatus.ready,
+                status=SessionStatus.uninitialized,
             )
             return await repo.create(value)
 
@@ -64,8 +64,9 @@ class SessionService:
             record = await repo.update_codex_thread_id(record, codex_thread_id=None)
             return await repo.update_status(
                 record,
-                status=SessionStatus.ready,
+                status=SessionStatus.uninitialized,
                 active_turn_id=None,
+                clear_last_bot_message_id=True,
             )
 
     async def mark_running(

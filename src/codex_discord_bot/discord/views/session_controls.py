@@ -3,6 +3,13 @@ from __future__ import annotations
 import discord
 
 from codex_discord_bot.discord.handlers.interactions import send_interaction_error
+from codex_discord_bot.persistence.enums import SessionStatus
+
+
+def _format_codex_thread_id(session) -> str:
+    if session.status == SessionStatus.uninitialized:
+        return "无"
+    return session.codex_thread_id or "无"
 
 
 class SessionControlView(discord.ui.View):
@@ -20,10 +27,12 @@ class SessionControlView(discord.ui.View):
             await send_interaction_error(interaction, "请在论坛线程中使用会话控制按钮。")
             return
 
-        session = await self.app_state.session_service.get_session_for_thread(str(interaction.channel.id))
-        if session is None:
-            await interaction.response.send_message("当前线程还没有会话记录。", ephemeral=True)
+        try:
+            route = await self.app_state.session_router.ensure_route_for_thread(interaction.channel)
+        except ValueError as exc:
+            await send_interaction_error(interaction, str(exc))
             return
+        session = route.session
 
         worker = self.app_state.worker_pool.get_worker(str(interaction.channel.id))
         active_turn = worker.get_active_turn() if worker is not None else None
@@ -34,7 +43,7 @@ class SessionControlView(discord.ui.View):
             "\n".join(
                 [
                     f"discord_thread_id: `{session.discord_thread_id}`",
-                    f"codex_thread_id: `{session.codex_thread_id or '未创建'}`",
+                    f"codex_thread_id: `{_format_codex_thread_id(session)}`",
                     f"codex_source: `{codex_thread.source_label if codex_thread is not None and codex_thread.source_label else '未知'}`",
                     f"codex_archived: `{codex_thread.archived if codex_thread is not None else '未知'}`",
                     f"codex_bound_thread_id: `{codex_thread.bound_discord_thread_id if codex_thread is not None and codex_thread.bound_discord_thread_id is not None else '无'}`",

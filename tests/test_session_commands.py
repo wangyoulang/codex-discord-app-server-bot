@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 import codex_discord_bot.discord.commands.session as session_commands
+from codex_discord_bot.persistence.enums import SessionStatus
 
 
 class FakeThread:
@@ -63,6 +64,9 @@ class FakeWorkerPool:
     def __init__(self, browser: object) -> None:
         self.browser = browser
         self.lease_keys: list[str] = []
+
+    def has_worker(self, _thread_id: str) -> bool:
+        return False
 
     def get_worker(self, _thread_id: str) -> None:
         return None
@@ -121,6 +125,30 @@ class FakeCodexThreadService:
             }
         )
 
+    async def ensure_thread_available_for_discord(
+        self,
+        *,
+        workspace_id: int,
+        codex_thread_id: str,
+        discord_thread_id: str,
+    ) -> None:
+        self.bind_calls.append(
+            {
+                "workspace_id": str(workspace_id),
+                "codex_thread_id": codex_thread_id,
+                "discord_thread_id": discord_thread_id,
+            }
+        )
+
+    async def get_by_codex_thread_id(self, codex_thread_id: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            codex_thread_id=codex_thread_id,
+            source_label=self.source_label,
+            archived=False,
+            preview=self.preview,
+            bound_discord_thread_id="1001",
+        )
+
     async def release_binding_if_owned(
         self,
         *,
@@ -147,6 +175,7 @@ class FakeSessionService:
     def __init__(self) -> None:
         self.bind_calls: list[dict[str, str | None]] = []
         self.mark_ready_calls: list[str] = []
+        self.mark_uninitialized_calls: list[str] = []
 
     async def bind_codex_thread(
         self,
@@ -181,6 +210,9 @@ class FakeSessionService:
             }
         )
 
+    async def mark_uninitialized(self, *, discord_thread_id: str) -> None:
+        self.mark_uninitialized_calls.append(discord_thread_id)
+
 
 class FakeAuditService:
     def __init__(self) -> None:
@@ -203,11 +235,22 @@ def _build_app_state(
     browser: object | None,
     workspace_cwd: str = "/repo/",
     current_codex_thread_id: str | None = None,
+    session_status: SessionStatus | None = None,
     source_label: str = "cli",
     preview: str = "测试预览",
 ):
     workspace = SimpleNamespace(id=6, cwd=workspace_cwd)
-    session = SimpleNamespace(codex_thread_id=current_codex_thread_id, active_turn_id=None)
+    if session_status is None:
+        session_status = (
+            SessionStatus.ready if current_codex_thread_id is not None else SessionStatus.uninitialized
+        )
+    session = SimpleNamespace(
+        codex_thread_id=current_codex_thread_id,
+        active_turn_id=None,
+        status=session_status,
+        discord_thread_id="1001",
+        last_bot_message_id=None,
+    )
     route = SimpleNamespace(workspace=workspace, session=session)
     browser_obj = browser or SimpleNamespace()
     return SimpleNamespace(
@@ -218,6 +261,7 @@ def _build_app_state(
         codex_thread_service=FakeCodexThreadService(source_label=source_label, preview=preview),
         session_service=FakeSessionService(),
         audit_service=FakeAuditService(),
+        turn_output_service=SimpleNamespace(get_latest_for_thread=_async_return(None)),
     )
 
 
@@ -278,6 +322,82 @@ def test_resume_session_accepts_normalized_workspace_cwd() -> None:
         assert app_state.session_service.mark_ready_calls == ["1001"]
         assert len(interaction.response.messages) == 1
         assert "Codex 会话已恢复：`thr_1`" in interaction.response.messages[0]["message"]
+
+    asyncio.run(scenario())
+
+
+def test_new_session_initializes_new_codex_thread() -> None:
+    class FakeBrowser:
+        async def start_new_thread(self, workspace) -> str:
+            assert workspace.cwd == "/repo/"
+            return "thr_new"
+
+        async def read_thread(self, session_id: str, *, include_turns: bool) -> dict[str, object]:
+            assert session_id == "thr_new"
+            assert include_turns is False
+            return {"id": "thr_new", "cwd": "/repo", "preview": "新会话", "source": {"custom": "discord-bot"}}
+
+    async def scenario() -> None:
+        app_state = _build_app_state(browser=FakeBrowser(), workspace_cwd="/repo/")
+        interaction = FakeInteraction(FakeThread("1005"))
+        callback = _find_command_callback(app_state, "new")
+
+        with patch.object(session_commands.discord, "Thread", FakeThread):
+            await callback(interaction)
+
+        assert app_state.worker_pool.lease_keys == ["1005"]
+        assert app_state.session_service.bind_calls == [
+            {
+                "discord_thread_id": "1005",
+                "codex_thread_id": "thr_new",
+            }
+        ]
+        assert app_state.session_service.mark_ready_calls == ["1005"]
+        assert len(interaction.response.messages) == 1
+        assert "Codex 会话已准备：`thr_new`" in interaction.response.messages[0]["message"]
+
+    asyncio.run(scenario())
+
+
+def test_new_session_rejects_when_current_thread_already_initialized() -> None:
+    async def scenario() -> None:
+        app_state = _build_app_state(
+            browser=SimpleNamespace(),
+            workspace_cwd="/repo/",
+            current_codex_thread_id="thr_existing",
+            session_status=SessionStatus.ready,
+        )
+        interaction = FakeInteraction(FakeThread("1006"))
+        callback = _find_command_callback(app_state, "new")
+
+        with patch.object(session_commands.discord, "Thread", FakeThread):
+            await callback(interaction)
+
+        assert app_state.worker_pool.lease_keys == []
+        assert app_state.session_service.bind_calls == []
+        assert interaction.response.messages == [
+            {
+                "message": "当前线程已经初始化过 Codex 会话。如需创建新会话，请先执行 `/codex session detach` 后再重试。",
+                "ephemeral": True,
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_status_command_shows_uninitialized_session() -> None:
+    async def scenario() -> None:
+        app_state = _build_app_state(browser=SimpleNamespace(), workspace_cwd="/repo/")
+        interaction = FakeInteraction(FakeThread("1007"))
+        callback = _find_command_callback(app_state, "status")
+
+        with patch.object(session_commands.discord, "Thread", FakeThread):
+            await callback(interaction)
+
+        assert len(interaction.response.messages) == 1
+        message = interaction.response.messages[0]["message"]
+        assert "codex_thread_id: `无`" in message
+        assert "status: `uninitialized`" in message
 
     asyncio.run(scenario())
 

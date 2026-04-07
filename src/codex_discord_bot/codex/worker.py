@@ -147,6 +147,12 @@ class CodexWorker:
             self._thread_cache[thread_id] = thread_id
             return thread_id
 
+        return self._start_new_thread_sync(workspace)
+
+    def _start_new_thread_sync(self, workspace: Workspace) -> str:
+        self._ensure_client_sync()
+        assert self._client is not None
+
         response = self._client.thread_start(
             {
                 "cwd": workspace.cwd,
@@ -167,6 +173,12 @@ class CodexWorker:
         workspace: Workspace,
     ) -> str:
         return await asyncio.to_thread(self._ensure_thread_sync, session, workspace)
+
+    async def start_new_thread(
+        self,
+        workspace: Workspace,
+    ) -> str:
+        return await asyncio.to_thread(self._start_new_thread_sync, workspace)
 
     def _list_threads_sync(
         self,

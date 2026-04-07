@@ -4,6 +4,7 @@ from enum import Enum
 
 
 class SessionStatus(str, Enum):
+    uninitialized = "uninitialized"
     ready = "ready"
     running = "running"
     error = "error"

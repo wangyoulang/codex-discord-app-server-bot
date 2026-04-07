@@ -38,7 +38,7 @@ def test_session_service_tracks_active_turn_lifecycle(tmp_path: Path) -> None:
             discord_thread_id="discord_thread_1",
             workspace_id=workspace.id,
         )
-        assert created.status == SessionStatus.ready
+        assert created.status == SessionStatus.uninitialized
         assert created.active_turn_id is None
 
         running = await service.mark_running(
@@ -76,7 +76,7 @@ def test_session_service_tracks_active_turn_lifecycle(tmp_path: Path) -> None:
             discord_thread_id="discord_thread_1",
         )
         assert detached.codex_thread_id is None
-        assert detached.status == SessionStatus.ready
+        assert detached.status == SessionStatus.uninitialized
         assert await service.get_session_for_codex_thread("codex_thread_1") is None
 
         await db.close()

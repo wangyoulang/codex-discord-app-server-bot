@@ -312,6 +312,35 @@ def test_worker_resume_uses_only_cwd_override() -> None:
     asyncio.run(scenario())
 
 
+def test_worker_start_new_thread_uses_only_cwd_override() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.thread_start_params: dict | None = None
+
+        def thread_start(self, params: dict) -> dict:
+            self.thread_start_params = params
+            return {"thread": {"id": "thr_new"}}
+
+    async def scenario() -> None:
+        settings = Settings(discord_bot_token="token")
+        worker = CodexWorker(settings, worker_key="thread-1")
+        fake_client = FakeClient()
+        worker._client = fake_client  # type: ignore[assignment]
+        workspace = Workspace(
+            guild_id="guild_1",
+            forum_channel_id="forum_1",
+            name="demo",
+            cwd="/repo",
+        )
+
+        thread_id = await worker.start_new_thread(workspace)
+
+        assert thread_id == "thr_new"
+        assert fake_client.thread_start_params == {"cwd": "/repo"}
+
+    asyncio.run(scenario())
+
+
 def test_worker_emits_structured_stream_events() -> None:
     class FakeClient:
         def thread_start(self, params: dict) -> dict:

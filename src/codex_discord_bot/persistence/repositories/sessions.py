@@ -43,10 +43,13 @@ class DiscordSessionRepository:
         status: SessionStatus,
         active_turn_id: str | None = None,
         last_bot_message_id: str | None = None,
+        clear_last_bot_message_id: bool = False,
     ) -> DiscordSession:
         record.status = status
         record.active_turn_id = active_turn_id
-        if last_bot_message_id is not None:
+        if clear_last_bot_message_id:
+            record.last_bot_message_id = None
+        elif last_bot_message_id is not None:
             record.last_bot_message_id = last_bot_message_id
         await self.session.flush()
         await self.session.refresh(record)

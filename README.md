@@ -80,11 +80,10 @@ sudo systemctl restart codex-discord-app-server-bot.service
 1. 在 `.env` 里配置 Discord token 和 application id。
 2. 可选设置 `CODEX_HOME`；不设置时会直接复用当前机器上 `codex` 默认使用的 home 和 `config.toml`。
 3. 在 Discord 服务器里执行 `/codex project add`，把论坛频道绑定到项目根目录。
-4. 在该论坛频道中新建线程，执行 `/codex session new`。
-5. 若需要恢复历史会话，可执行 `/codex session list` 和 `/codex session resume`。
-6. 若需要会话整理，可执行 `/codex session detach`、`/codex session archive`、`/codex session unarchive`。
-7. 直接在论坛线程里发文本消息或图片附件即可。
-8. 如果 Codex 正在执行，再发新消息会走 `turn/steer`；需要停止时可以点击“打断”按钮。
+4. 在该论坛频道中新建线程后，先执行 `/codex session new` 初始化新会话，或执行 `/codex session list` 后再用 `/codex session resume` 恢复历史会话。
+5. 若需要会话整理，可执行 `/codex session detach`、`/codex session archive`、`/codex session unarchive`。
+6. 只有当前线程初始化成功后，直接发送文本消息或图片附件才会调用 Codex。
+7. 如果 Codex 正在执行，再发新消息会走 `turn/steer`；需要停止时可以点击“打断”按钮。
 
 目录结构：
 

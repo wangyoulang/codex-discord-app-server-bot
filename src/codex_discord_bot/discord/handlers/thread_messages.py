@@ -12,11 +12,20 @@ from codex_discord_bot.discord.streaming.turn_output_controller import TurnOutpu
 from codex_discord_bot.discord.views.approvals import ApprovalDecisionView
 from codex_discord_bot.discord.views.session_controls import SessionControlView
 from codex_discord_bot.logging import get_logger
+from codex_discord_bot.persistence.enums import SessionStatus
 
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from codex_discord_bot.discord.bot import CodexDiscordBot
+
+
+def _session_is_initialized(session: object) -> bool:
+    codex_thread_id = getattr(session, "codex_thread_id", None)
+    status = getattr(session, "status", None)
+    if not isinstance(codex_thread_id, str) or not codex_thread_id:
+        return False
+    return status != SessionStatus.uninitialized
 
 
 async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message) -> None:
@@ -30,6 +39,26 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
     try:
         route = await bot.app_state.session_router.ensure_route_for_thread(message.channel)
     except ValueError:
+        return
+
+    if not _session_is_initialized(route.session):
+        await bot.app_state.audit_service.record(
+            action="thread_message_blocked_uninitialized",
+            guild_id=str(message.guild.id),
+            discord_thread_id=str(message.channel.id),
+            actor_id=str(message.author.id),
+            payload={
+                "message_id": str(message.id),
+                "content_length": len(message.content),
+                "attachment_count": len(message.attachments),
+            },
+        )
+        await message.reply(
+            "当前线程尚未初始化 Codex 会话，请先执行 `/codex session new` 创建新会话，"
+            "或执行 `/codex session list` 后再用 `/codex session resume` 恢复历史会话。"
+            "当前消息不会发送给 Codex。",
+            mention_author=False,
+        )
         return
 
     worker_key = str(message.channel.id)
@@ -49,7 +78,7 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
             )
             return
 
-    if not is_busy and route.session.status.value == "running":
+    if not is_busy and route.session.status == SessionStatus.running:
         await bot.app_state.session_service.mark_ready(
             discord_thread_id=str(message.channel.id),
         )

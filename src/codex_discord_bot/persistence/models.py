@@ -78,7 +78,7 @@ class DiscordSession(Base):
     active_turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[SessionStatus] = mapped_column(
         SqlEnum(SessionStatus, native_enum=False),
-        default=SessionStatus.ready,
+        default=SessionStatus.uninitialized,
         nullable=False,
     )
     last_bot_message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)

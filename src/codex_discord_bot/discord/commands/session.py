@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 
 from codex_discord_bot.discord.handlers.interactions import send_interaction_error
+from codex_discord_bot.persistence.enums import SessionStatus
 
 
 def _normalize_workspace_cwd(value: object) -> str | None:
@@ -21,6 +22,23 @@ def _same_workspace_cwd(left: object, right: object) -> bool:
     if normalized_left is None or normalized_right is None:
         return False
     return normalized_left == normalized_right
+
+
+def _session_is_initialized(session: object) -> bool:
+    codex_thread_id = getattr(session, "codex_thread_id", None)
+    status = getattr(session, "status", None)
+    if not isinstance(codex_thread_id, str) or not codex_thread_id:
+        return False
+    return status != SessionStatus.uninitialized
+
+
+def _format_codex_thread_id(session: object) -> str:
+    if getattr(session, "status", None) == SessionStatus.uninitialized:
+        return "无"
+    codex_thread_id = getattr(session, "codex_thread_id", None)
+    if isinstance(codex_thread_id, str) and codex_thread_id:
+        return codex_thread_id
+    return "无"
 
 
 def build_group(app_state) -> app_commands.Group:
@@ -150,10 +168,22 @@ def build_group(app_state) -> app_commands.Group:
             await send_interaction_error(interaction, "请在论坛线程中执行该命令。")
             return
 
+        worker = app_state.worker_pool.get_worker(str(interaction.channel.id))
+        live_active_turn = worker.get_active_turn() if worker is not None else None
+        if app_state.worker_pool.is_busy(str(interaction.channel.id)) or live_active_turn is not None:
+            await send_interaction_error(interaction, "当前线程存在运行中的 turn，请先等待完成或手动打断。")
+            return
+
         try:
             route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
+            if _session_is_initialized(route.session):
+                await send_interaction_error(
+                    interaction,
+                    "当前线程已经初始化过 Codex 会话。如需创建新会话，请先执行 `/codex session detach` 后再重试。",
+                )
+                return
             async with app_state.worker_pool.lease(str(interaction.channel.id)) as worker:
-                codex_thread_id = await worker.ensure_thread(route.session, route.workspace)
+                codex_thread_id = await worker.start_new_thread(route.workspace)
                 thread_payload = await worker.read_thread(codex_thread_id, include_turns=False)
             await app_state.session_service.bind_codex_thread(
                 discord_thread_id=str(interaction.channel.id),
@@ -168,6 +198,9 @@ def build_group(app_state) -> app_commands.Group:
             await app_state.codex_thread_service.ensure_thread_available_for_discord(
                 workspace_id=route.workspace.id,
                 codex_thread_id=codex_thread_id,
+                discord_thread_id=str(interaction.channel.id),
+            )
+            await app_state.session_service.mark_ready(
                 discord_thread_id=str(interaction.channel.id),
             )
         except ValueError as exc:
@@ -188,10 +221,12 @@ def build_group(app_state) -> app_commands.Group:
             await send_interaction_error(interaction, "请在论坛线程中执行该命令。")
             return
 
-        session = await app_state.session_service.get_session_for_thread(str(interaction.channel.id))
-        if session is None:
-            await interaction.response.send_message("当前线程还没有会话记录。", ephemeral=True)
+        try:
+            route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
+        except ValueError as exc:
+            await send_interaction_error(interaction, str(exc))
             return
+        session = route.session
 
         latest_output = await app_state.turn_output_service.get_latest_for_thread(
             str(interaction.channel.id)
@@ -206,7 +241,7 @@ def build_group(app_state) -> app_commands.Group:
             "\n".join(
                 [
                     f"discord_thread_id: `{session.discord_thread_id}`",
-                    f"codex_thread_id: `{session.codex_thread_id or '未创建'}`",
+                    f"codex_thread_id: `{_format_codex_thread_id(session)}`",
                     f"codex_source: `{codex_thread.source_label if codex_thread is not None and codex_thread.source_label else '未知'}`",
                     f"codex_archived: `{codex_thread.archived if codex_thread is not None else '未知'}`",
                     f"codex_preview: `{format_preview(codex_thread) if codex_thread is not None else '无'}`",
@@ -318,6 +353,12 @@ def build_group(app_state) -> app_commands.Group:
 
         try:
             route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
+            if _session_is_initialized(route.session) and route.session.codex_thread_id != session:
+                await send_interaction_error(
+                    interaction,
+                    "当前线程已经绑定其它 Codex 会话。如需恢复新会话，请先执行 `/codex session detach`。",
+                )
+                return
             browser_key = f"session-browser:{route.workspace.id}"
             async with app_state.worker_pool.lease(browser_key) as browser:
                 thread_payload = await browser.read_thread(session, include_turns=False)
@@ -425,7 +466,7 @@ def build_group(app_state) -> app_commands.Group:
             return
 
         session_record = await app_state.session_service.get_session_for_thread(str(interaction.channel.id))
-        if session_record is None or session_record.codex_thread_id is None:
+        if session_record is None or not _session_is_initialized(session_record):
             await send_interaction_error(interaction, "当前线程没有可解绑的 Codex 会话。")
             return
 
@@ -463,7 +504,7 @@ def build_group(app_state) -> app_commands.Group:
 
         try:
             route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
-            if route.session.codex_thread_id is None:
+            if not _session_is_initialized(route.session):
                 await send_interaction_error(interaction, "当前线程没有可归档的 Codex 会话。")
                 return
 

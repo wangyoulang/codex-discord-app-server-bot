@@ -123,8 +123,8 @@ Storage
 
 ## 5.2 Codex 对象映射
 
-- 一个 Discord Forum Thread 映射一个 `codex threadId`
-- 一条用户消息通常触发一个 `turn`
+- 一个 Discord Forum Thread 对应一个显式初始化的 Codex 会话入口
+- 只有执行 `/codex session new` 或 `/codex session resume` 成功后，后续用户消息才会触发 `turn`
 - 如果上一个 turn 仍在运行，则新消息走 `turn/steer`
 
 ## 5.3 状态映射
@@ -164,11 +164,11 @@ Storage
 
 - 识别当前 Discord thread 属于哪个 workspace
 - 读取或创建 `discord_thread_id -> codex_thread_id` 映射
-- 判断当前消息应调用 `turn/start` 还是 `turn/steer`
+- 判断当前线程是否已初始化，并在已初始化时决定消息应调用 `turn/start` 还是 `turn/steer`
 
 关键逻辑：
 
-- 若无 Codex thread：`thread/start`
+- 若线程未初始化：拒绝普通消息并提示先执行 `/codex session new` 或 `/codex session resume`
 - 若有 Codex thread 且无 active turn：`turn/start`
 - 若有 active turn：`turn/steer`
 
