@@ -27,6 +27,40 @@ def test_parse_media_directives_from_text_strips_media_lines_and_normalizes_path
     assert artifact.parent_item_id == "item_1"
 
 
+def test_parse_media_directives_from_text_supports_markdown_image_local_path(tmp_path: Path) -> None:
+    image_path = (tmp_path / "monitor-dashboard.png").resolve()
+
+    parsed = parse_media_directives_from_text(
+        f"已直接贴图\n![监控大盘截图]({image_path})\n请继续分析",
+        item_id="item_1",
+        workspace_cwd=str(tmp_path),
+    )
+
+    assert parsed.text == "已直接贴图\n请继续分析"
+    assert len(parsed.media_artifacts) == 1
+    artifact = parsed.media_artifacts[0]
+    assert artifact.path == str(image_path)
+    assert artifact.source_type == "markdownImage"
+    assert artifact.parent_item_id == "item_1"
+
+
+def test_parse_media_directives_from_text_supports_markdown_link_local_path(tmp_path: Path) -> None:
+    image_path = (tmp_path / "monitor-dashboard.png").resolve()
+
+    parsed = parse_media_directives_from_text(
+        f"前文\n[monitor-dashboard.png]({image_path})\n后文",
+        item_id="item_1",
+        workspace_cwd=str(tmp_path),
+    )
+
+    assert parsed.text == "前文\n后文"
+    assert len(parsed.media_artifacts) == 1
+    artifact = parsed.media_artifacts[0]
+    assert artifact.path == str(image_path)
+    assert artifact.source_type == "markdownLink"
+    assert artifact.parent_item_id == "item_1"
+
+
 def test_parse_media_directives_from_text_keeps_invalid_non_image_lines() -> None:
     parsed = parse_media_directives_from_text(
         "说明\nMEDIA: /tmp/result.txt\n结束",
@@ -35,6 +69,17 @@ def test_parse_media_directives_from_text_keeps_invalid_non_image_lines() -> Non
     )
 
     assert parsed.text == "说明\nMEDIA: /tmp/result.txt\n结束"
+    assert parsed.media_artifacts == []
+
+
+def test_parse_media_directives_from_text_keeps_remote_markdown_links() -> None:
+    parsed = parse_media_directives_from_text(
+        "说明\n![线上图片](https://example.com/monitor.png)\n结束",
+        item_id="item_1",
+        workspace_cwd="/repo",
+    )
+
+    assert parsed.text == "说明\n![线上图片](https://example.com/monitor.png)\n结束"
     assert parsed.media_artifacts == []
 
 

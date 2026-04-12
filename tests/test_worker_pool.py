@@ -632,3 +632,87 @@ def test_worker_collects_media_directive_artifacts_and_strips_directive_text() -
         ]
 
     asyncio.run(scenario())
+
+def test_worker_collects_markdown_image_artifacts_and_strips_markdown_text() -> None:
+    class FakeClient:
+        def thread_start(self, params: dict) -> dict:
+            assert params == {"cwd": "/repo"}
+            return {"thread": {"id": "thr_1"}}
+
+        def turn_start(self, thread_id: str, text: str, *, params: dict | None = None) -> dict:
+            assert thread_id == "thr_1"
+            assert text == "展示截图"
+            assert params == {"cwd": "/repo"}
+            return {"turn": {"id": "turn_1"}}
+
+        def next_notification(self) -> Notification:
+            return Notification(
+                method="turn/completed",
+                payload={"threadId": "thr_1", "turn": {"id": "turn_1", "status": "completed"}},
+            )
+
+        def thread_read(self, thread_id: str, *, include_turns: bool) -> dict:
+            assert thread_id == "thr_1"
+            assert include_turns is True
+            return {
+                "thread": {
+                    "turns": [
+                        {
+                            "id": "turn_1",
+                            "items": [
+                                {
+                                    "id": "item_1",
+                                    "type": "agentMessage",
+                                    "text": "截图如下\n![监控大盘截图](/repo/artifacts/screen.png)\n请确认",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+
+    async def noop_event(_event) -> None:
+        return None
+
+    async def noop_approval(_envelope) -> dict:
+        return {"decision": "decline"}
+
+    async def scenario() -> None:
+        settings = Settings(discord_bot_token="token")
+        worker = CodexWorker(settings, worker_key="thread-1")
+        fake_client = FakeClient()
+        worker._client = fake_client  # type: ignore[assignment]
+        session = DiscordSession(
+            discord_thread_id="discord_thread_1",
+            workspace_id=1,
+            status=SessionStatus.ready,
+        )
+        workspace = Workspace(
+            guild_id="guild_1",
+            forum_channel_id="forum_1",
+            name="demo",
+            cwd="/repo",
+        )
+
+        result = await worker.run_streamed_text_turn(
+            session,
+            workspace,
+            "展示截图",
+            on_event=noop_event,
+            on_approval_request=noop_approval,
+        )
+
+        assert result.final_text == "截图如下\n请确认"
+        assert len(result.assistant_messages) == 1
+        assert result.assistant_messages[0].item_id == "item_1"
+        assert result.assistant_messages[0].text == "截图如下\n请确认"
+        assert result.image_artifacts == [
+            OutputImageArtifact(
+                item_id="item_1:media:0",
+                path="/repo/artifacts/screen.png",
+                source_type="markdownImage",
+                parent_item_id="item_1",
+            )
+        ]
+
+    asyncio.run(scenario())

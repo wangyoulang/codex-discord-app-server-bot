@@ -11,6 +11,9 @@ from codex_discord_bot.codex.stream_renderer import OutputImageArtifact
 from codex_discord_bot.codex.stream_renderer import SUPPORTED_OUTPUT_IMAGE_SUFFIXES
 
 _MEDIA_DIRECTIVE_RE = re.compile(r"^\s*MEDIA\s*:\s*(.+?)\s*$", re.IGNORECASE)
+_MARKDOWN_IMAGE_RE = re.compile(r"^\s*!\[(.*?)\]\((.+?)\)\s*$")
+_MARKDOWN_LINK_RE = re.compile(r"^\s*\[(.*?)\]\((.+?)\)\s*$")
+_WINDOWS_DRIVE_RE = re.compile(r"^[a-zA-Z]:[\\/]")
 
 
 @dataclass(slots=True)
@@ -31,24 +34,16 @@ def parse_media_directives_from_text(
     kept_lines: list[str] = []
     artifacts: list[OutputImageArtifact] = []
     for line in text.splitlines():
-        match = _MEDIA_DIRECTIVE_RE.match(line)
-        if match is None:
-            kept_lines.append(line)
-            continue
-
-        image_path = normalize_media_directive_path(match.group(1), workspace_cwd=workspace_cwd)
-        if image_path is None:
-            kept_lines.append(line)
-            continue
-
-        artifacts.append(
-            OutputImageArtifact(
-                item_id=f"{item_id}:media:{len(artifacts)}",
-                path=str(image_path),
-                source_type="mediaDirective",
-                parent_item_id=item_id,
-            )
+        parsed_line = _parse_media_line(
+            line,
+            item_id=item_id,
+            artifact_index=len(artifacts),
+            workspace_cwd=workspace_cwd,
         )
+        if parsed_line is None:
+            kept_lines.append(line)
+            continue
+        artifacts.append(parsed_line)
 
     return ParsedMediaDirectiveText(text="\n".join(kept_lines), media_artifacts=artifacts)
 
@@ -81,13 +76,14 @@ def normalize_media_directive_path(raw_value: str, *, workspace_cwd: str | None 
     if not candidate:
         return None
 
-    if candidate.startswith("file://"):
-        parsed = urlparse(candidate)
-        if parsed.scheme != "file":
+    parsed = urlparse(candidate)
+    if parsed.scheme:
+        if parsed.scheme == "file":
+            if parsed.netloc not in ("", "localhost"):
+                return None
+            candidate = unquote(parsed.path)
+        elif not _WINDOWS_DRIVE_RE.match(candidate):
             return None
-        if parsed.netloc not in ("", "localhost"):
-            return None
-        candidate = unquote(parsed.path)
 
     if candidate.startswith("~"):
         candidate = str(Path(candidate).expanduser())
@@ -103,6 +99,65 @@ def normalize_media_directive_path(raw_value: str, *, workspace_cwd: str | None 
     if resolved.suffix.lower() not in SUPPORTED_OUTPUT_IMAGE_SUFFIXES:
         return None
     return resolved
+
+
+def _parse_media_line(
+    line: str,
+    *,
+    item_id: str,
+    artifact_index: int,
+    workspace_cwd: str | None,
+) -> OutputImageArtifact | None:
+    media_match = _MEDIA_DIRECTIVE_RE.match(line)
+    if media_match is not None:
+        return _build_media_artifact(
+            raw_path=media_match.group(1),
+            item_id=item_id,
+            artifact_index=artifact_index,
+            workspace_cwd=workspace_cwd,
+            source_type="mediaDirective",
+        )
+
+    markdown_image_match = _MARKDOWN_IMAGE_RE.match(line)
+    if markdown_image_match is not None:
+        return _build_media_artifact(
+            raw_path=markdown_image_match.group(2),
+            item_id=item_id,
+            artifact_index=artifact_index,
+            workspace_cwd=workspace_cwd,
+            source_type="markdownImage",
+        )
+
+    markdown_link_match = _MARKDOWN_LINK_RE.match(line)
+    if markdown_link_match is not None:
+        return _build_media_artifact(
+            raw_path=markdown_link_match.group(2),
+            item_id=item_id,
+            artifact_index=artifact_index,
+            workspace_cwd=workspace_cwd,
+            source_type="markdownLink",
+        )
+
+    return None
+
+
+def _build_media_artifact(
+    *,
+    raw_path: str,
+    item_id: str,
+    artifact_index: int,
+    workspace_cwd: str | None,
+    source_type: str,
+) -> OutputImageArtifact | None:
+    image_path = normalize_media_directive_path(raw_path, workspace_cwd=workspace_cwd)
+    if image_path is None:
+        return None
+    return OutputImageArtifact(
+        item_id=f"{item_id}:media:{artifact_index}",
+        path=str(image_path),
+        source_type=source_type,
+        parent_item_id=item_id,
+    )
 
 
 def _unwrap_wrapped_value(value: str) -> str:
