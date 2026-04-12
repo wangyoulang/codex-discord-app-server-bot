@@ -11,9 +11,10 @@ from codex_discord_bot.codex.stream_renderer import OutputImageArtifact
 from codex_discord_bot.codex.stream_renderer import SUPPORTED_OUTPUT_IMAGE_SUFFIXES
 
 _MEDIA_DIRECTIVE_RE = re.compile(r"^\s*MEDIA\s*:\s*(.+?)\s*$", re.IGNORECASE)
-_MARKDOWN_IMAGE_RE = re.compile(r"^\s*!\[(.*?)\]\((.+?)\)\s*$")
-_MARKDOWN_LINK_RE = re.compile(r"^\s*\[(.*?)\]\((.+?)\)\s*$")
-_WINDOWS_DRIVE_RE = re.compile(r"^[a-zA-Z]:[\\/]")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[(.*?)\]\((.+?)\)")
+_MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[(.*?)\]\((.+?)\)")
+_WINDOWS_DRIVE_RE = re.compile(r"^[a-zA-Z]:[\/]")
+_PUNCTUATION_SPACE_RE = re.compile(r"[ \t]+([,.;:!?，。；：！？])")
 
 
 @dataclass(slots=True)
@@ -34,16 +35,18 @@ def parse_media_directives_from_text(
     kept_lines: list[str] = []
     artifacts: list[OutputImageArtifact] = []
     for line in text.splitlines():
-        parsed_line = _parse_media_line(
+        cleaned_line, line_artifacts = _parse_media_line(
             line,
             item_id=item_id,
             artifact_index=len(artifacts),
             workspace_cwd=workspace_cwd,
         )
-        if parsed_line is None:
-            kept_lines.append(line)
+        if line_artifacts:
+            if cleaned_line:
+                kept_lines.append(cleaned_line)
+            artifacts.extend(line_artifacts)
             continue
-        artifacts.append(parsed_line)
+        kept_lines.append(line)
 
     return ParsedMediaDirectiveText(text="\n".join(kept_lines), media_artifacts=artifacts)
 
@@ -107,38 +110,73 @@ def _parse_media_line(
     item_id: str,
     artifact_index: int,
     workspace_cwd: str | None,
-) -> OutputImageArtifact | None:
+) -> tuple[str, list[OutputImageArtifact]]:
     media_match = _MEDIA_DIRECTIVE_RE.match(line)
     if media_match is not None:
-        return _build_media_artifact(
+        artifact = _build_media_artifact(
             raw_path=media_match.group(1),
             item_id=item_id,
             artifact_index=artifact_index,
             workspace_cwd=workspace_cwd,
             source_type="mediaDirective",
         )
+        return ("", [artifact]) if artifact is not None else ("", [])
 
-    markdown_image_match = _MARKDOWN_IMAGE_RE.match(line)
-    if markdown_image_match is not None:
-        return _build_media_artifact(
-            raw_path=markdown_image_match.group(2),
+    return _extract_inline_markdown_media(
+        line,
+        item_id=item_id,
+        artifact_index=artifact_index,
+        workspace_cwd=workspace_cwd,
+    )
+
+
+def _extract_inline_markdown_media(
+    line: str,
+    *,
+    item_id: str,
+    artifact_index: int,
+    workspace_cwd: str | None,
+) -> tuple[str, list[OutputImageArtifact]]:
+    artifacts: list[OutputImageArtifact] = []
+    kept_parts: list[str] = []
+    cursor = 0
+
+    for match, source_type in _iter_markdown_matches(line):
+        artifact = _build_media_artifact(
+            raw_path=match.group(2),
             item_id=item_id,
-            artifact_index=artifact_index,
+            artifact_index=artifact_index + len(artifacts),
             workspace_cwd=workspace_cwd,
-            source_type="markdownImage",
+            source_type=source_type,
         )
+        if artifact is None:
+            continue
 
-    markdown_link_match = _MARKDOWN_LINK_RE.match(line)
-    if markdown_link_match is not None:
-        return _build_media_artifact(
-            raw_path=markdown_link_match.group(2),
-            item_id=item_id,
-            artifact_index=artifact_index,
-            workspace_cwd=workspace_cwd,
-            source_type="markdownLink",
-        )
+        start, end = match.span()
+        kept_parts.append(line[cursor:start])
+        cursor = end
+        artifacts.append(artifact)
 
-    return None
+    if not artifacts:
+        return "", []
+
+    kept_parts.append(line[cursor:])
+    cleaned_line = _normalize_cleaned_line("".join(kept_parts))
+    return cleaned_line, artifacts
+
+
+def _iter_markdown_matches(line: str) -> list[tuple[re.Match[str], str]]:
+    matches: list[tuple[re.Match[str], str]] = []
+    matches.extend((match, "markdownImage") for match in _MARKDOWN_IMAGE_RE.finditer(line))
+    matches.extend((match, "markdownLink") for match in _MARKDOWN_LINK_RE.finditer(line))
+    matches.sort(key=lambda item: item[0].start())
+    return matches
+
+
+def _normalize_cleaned_line(value: str) -> str:
+    collapsed_spaces = re.sub(r"[ \t]{2,}", " ", value)
+    without_punctuation_space = _PUNCTUATION_SPACE_RE.sub(r"\1", collapsed_spaces)
+    return without_punctuation_space.strip()
 
 
 def _build_media_artifact(
