@@ -9,6 +9,8 @@ from typing import Any
 from codex_discord_bot.codex.approvals import build_approval_envelope
 from codex_discord_bot.codex.app_server_client import AppServerClient
 from codex_discord_bot.codex.client_factory import build_codex_config
+from codex_discord_bot.codex.media_directives import parse_media_directives_from_messages
+from codex_discord_bot.codex.media_directives import parse_media_directives_from_text
 from codex_discord_bot.codex.stream_events import AgentMessageDeltaEvent
 from codex_discord_bot.codex.stream_events import CodexStreamEvent
 from codex_discord_bot.codex.stream_events import ItemCompletedEvent
@@ -16,8 +18,10 @@ from codex_discord_bot.codex.stream_events import ItemStartedEvent
 from codex_discord_bot.codex.stream_events import TurnCompletedEvent
 from codex_discord_bot.codex.stream_events import TurnStartedEvent
 from codex_discord_bot.codex.stream_renderer import AssistantMessageSnapshot
+from codex_discord_bot.codex.stream_renderer import OutputImageArtifact
 from codex_discord_bot.codex.stream_renderer import assistant_messages_from_items
 from codex_discord_bot.codex.stream_renderer import assistant_text_from_items
+from codex_discord_bot.codex.stream_renderer import output_images_from_items
 from codex_discord_bot.config import Settings
 from codex_discord_bot.persistence.models import DiscordSession
 from codex_discord_bot.persistence.models import Workspace
@@ -44,9 +48,27 @@ class TurnRunResult:
     turn_status: str
     error_message: str | None = None
     assistant_messages: list[AssistantMessageSnapshot] = field(default_factory=list)
+    image_artifacts: list[OutputImageArtifact] = field(default_factory=list)
 
 
 UserInputItems = list[dict[str, Any]] | dict[str, Any] | str
+
+
+def _merge_image_artifacts(*artifact_groups: list[OutputImageArtifact]) -> list[OutputImageArtifact]:
+    merged: list[OutputImageArtifact] = []
+    seen_item_ids: set[str] = set()
+    seen_paths: set[str] = set()
+    for artifact_group in artifact_groups:
+        for artifact in artifact_group:
+            if artifact.item_id in seen_item_ids:
+                continue
+            normalized_path = artifact.path.strip()
+            if normalized_path in seen_paths:
+                continue
+            seen_item_ids.add(artifact.item_id)
+            seen_paths.add(normalized_path)
+            merged.append(artifact)
+    return merged
 
 
 class CodexWorker:
@@ -366,12 +388,37 @@ class CodexWorker:
                     persisted_turn = turn
                     break
 
-            assistant_messages = assistant_messages_from_items(
-                persisted_turn.get("items") if isinstance(persisted_turn, dict) else None
+            turn_items = persisted_turn.get("items") if isinstance(persisted_turn, dict) else None
+            assistant_messages = assistant_messages_from_items(turn_items)
+            structured_image_artifacts = output_images_from_items(turn_items)
+            directive_image_artifacts: list[OutputImageArtifact] = []
+
+            if self.settings.discord_media_directive_enabled:
+                assistant_messages, directive_image_artifacts = parse_media_directives_from_messages(
+                    assistant_messages,
+                    workspace_cwd=workspace.cwd,
+                )
+
+            final_text = "".join(snapshot.text for snapshot in assistant_messages).strip()
+            if not final_text:
+                raw_final_text = assistant_text_from_items(turn_items).strip()
+                if self.settings.discord_media_directive_enabled and raw_final_text:
+                    parsed_final_text = parse_media_directives_from_text(
+                        raw_final_text,
+                        item_id="finalText",
+                        workspace_cwd=workspace.cwd,
+                    )
+                    final_text = parsed_final_text.text.strip()
+                    directive_image_artifacts.extend(parsed_final_text.media_artifacts)
+                else:
+                    final_text = raw_final_text
+
+            image_artifacts = _merge_image_artifacts(
+                structured_image_artifacts,
+                directive_image_artifacts,
             )
-            final_text = assistant_text_from_items(
-                persisted_turn.get("items") if isinstance(persisted_turn, dict) else None
-            ).strip() or "[Codex 未返回文本结果]"
+            if not final_text and not image_artifacts:
+                final_text = "[Codex 未返回文本结果]"
             return TurnRunResult(
                 thread_id=thread_id,
                 turn_id=turn_id,
@@ -379,6 +426,7 @@ class CodexWorker:
                 turn_status=completed_status,
                 error_message=completed_error_message,
                 assistant_messages=assistant_messages,
+                image_artifacts=image_artifacts,
             )
         finally:
             active_turn = self.get_active_turn()

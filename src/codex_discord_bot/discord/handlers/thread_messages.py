@@ -171,6 +171,7 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
         turn_output_service=bot.app_state.turn_output_service,
         source_message=message,
         control_message=control_message,
+        workspace_cwd=route.workspace.cwd,
     )
 
     async def on_event(event) -> None:

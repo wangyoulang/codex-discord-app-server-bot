@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     )
     discord_final_max_lines_per_message: int = 17
     discord_reply_to_mode: Literal["none", "first", "all"] = "first"
+    discord_media_directive_enabled: bool = True
+    discord_outbound_image_max_bytes: int = 25 * 1024 * 1024
 
     def ensure_runtime_dirs(self) -> None:
         for path in (self.state_dir, self.artifact_dir, self.log_dir):
