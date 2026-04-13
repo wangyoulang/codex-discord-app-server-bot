@@ -1,25 +1,16 @@
 # Codex Discord App Server Bot
 
-基于 `Discord + Codex app-server` 的机器人方案仓库。
+这是一个把 Discord 论坛频道绑定到本地项目目录，并在论坛线程中与 Codex 交互的机器人。
 
-当前仓库能力：
+## 环境准备
 
-- 已支持工作区注册、会话初始化、线程内流式输出
-- 已支持运行中 turn 的 `turn/steer`
-- 已支持运行中 turn 的 `turn/interrupt`
-- 已支持复用本地 `codex` CLI、自身 `config.toml` 和项目 `AGENTS.md`
+1. 安装 Python 3.11+ 与 `uv`
+2. 本机可直接执行 `codex`
+3. 在 Discord Developer Portal 创建应用与 Bot，并开启：
+   - `MESSAGE CONTENT INTENT`
+   - `GUILD MEMBERS INTENT`
 
-文档入口：
-
-- [Discord + Codex app-server 方案设计](./docs/discord-codex-app-server-design.md)
-
-运行原则：
-
-- bot 只负责把 Discord 论坛频道绑定到本地项目目录
-- Codex 行为配置由你本机已有的 `codex` 配置接管
-- 只要 `/codex project add` 传入的是项目根目录，Codex 会按原生机制读取该项目的 `AGENTS.md`
-
-建议启动方式：
+## 快速启动
 
 ```bash
 uv sync
@@ -29,32 +20,40 @@ uv run python scripts/register_commands.py
 uv run python scripts/dev.py
 ```
 
-使用说明：
+## 配置说明
 
-1. 在 `.env` 里配置 Discord token 和 application id。
-2. 可选设置 `CODEX_HOME`；不设置时会直接复用当前机器上 `codex` 默认使用的 home 和 `config.toml`。
-3. 在 Discord 服务器里执行 `/codex project add`，把论坛频道绑定到项目根目录。
-4. 在该论坛频道中新建线程，执行 `/codex session new`。
-5. 直接在论坛线程里发消息即可。
-6. 如果 Codex 正在执行，再发新消息会走 `turn/steer`；需要停止时可以点击“打断”按钮。
+最少需要在 `.env` 中填写：
 
-目录结构：
+```env
+DISCORD_BOT_TOKEN=
+DISCORD_APPLICATION_ID=
+```
 
-- `src/codex_discord_bot/discord/`：Discord bot、命令、视图、消息处理
-- `src/codex_discord_bot/codex/`：Codex worker、worker pool、会话路由
-- `src/codex_discord_bot/persistence/`：数据库模型与 repository
-- `src/codex_discord_bot/services/`：工作区、会话、审计等业务服务
-- `migrations/`：Alembic 迁移
-- `scripts/`：开发、命令同步、健康检查
+常用可选项：
 
-当前功能边界：
+- `DISCORD_GUILD_ID`：只向指定服务器同步命令时使用
+- `CODEX_HOME`：让 bot 使用指定的 Codex 配置目录
+- `DATABASE_URL`：修改数据库位置
 
-- 已支持：工作区注册、会话初始化、流式消息渲染、`turn/steer`、`turn/interrupt`
-- 未支持：附件输入、`review/start`
+完整示例见 `.env.example`。
 
-设计目标：
+## 使用流程
 
-- 在 Discord 中以线程形式承载 Codex 会话
-- 保留 Codex 原生 `thread / turn / item` 能力
-- 支持流式输出、恢复、审计与权限隔离
-- 避免引入额外 ACP/OpenClaw 网关层带来的能力折损
+1. 启动 bot 后，在 Discord 服务器中执行 `/codex project add`
+2. 在目标论坛频道中新建线程
+3. 在线程中执行 `/codex session new`
+4. 执行 `/codex session status` 确认当前线程已绑定会话
+5. 直接在线程里发送文本消息
+
+## 可用命令
+
+- `/codex project add`
+- `/codex project list`
+- `/codex session new`
+- `/codex session status`
+- `/codex admin sync`
+
+## 注意事项
+
+- 只有已初始化会话的线程才会把消息发送给 Codex
+- `review` 命令当前不要使用
