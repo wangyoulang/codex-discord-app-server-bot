@@ -5,13 +5,15 @@ After=network-online.target
 
 [Service]
 Type=simple
-User=wyl
-Group=wyl
-WorkingDirectory=/home/wyl/.codex/codex-discord-app-server-bot
-Environment=HOME=/home/wyl
+# 使用前请替换为实际部署账号、家目录与项目目录。
+User=REPLACE_WITH_USER
+Group=REPLACE_WITH_GROUP
+WorkingDirectory=REPLACE_WITH_PROJECT_DIR
+Environment=HOME=REPLACE_WITH_HOME_DIR
 Environment=PYTHONUNBUFFERED=1
-Environment=PATH=/home/wyl/.local/bin:/home/wyl/.nvm/versions/node/v25.2.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/home/wyl/.codex/codex-discord-app-server-bot/.venv/bin/python /home/wyl/.codex/codex-discord-app-server-bot/scripts/dev.py
+# 请确保 PATH 中可找到 uv、codex 以及其它运行时依赖。
+Environment=PATH=REPLACE_WITH_PATH
+ExecStart=REPLACE_WITH_PROJECT_DIR/.venv/bin/python REPLACE_WITH_PROJECT_DIR/scripts/dev.py
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGINT
