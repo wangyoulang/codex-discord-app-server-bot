@@ -63,5 +63,6 @@ DISCORD_APPLICATION_ID=
 
 - 同一个线程在恢复其他历史会话前，通常需要先执行 `/codex session detach`
 - 只有已初始化会话的线程才会把消息发送给 Codex
+- 刚执行 `/codex session new` 后，需先完成首轮对话，该会话才会出现在可恢复列表里
 - Codex 运行中再次发送消息时，会进入当前会话的继续交互流程
 - `review` 命令当前不要使用

@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 
 from codex_discord_bot.discord.handlers.interactions import send_interaction_error
+from codex_discord_bot.discord.handlers.interactions import send_interaction_message
 from codex_discord_bot.persistence.enums import SessionStatus
 
 
@@ -41,6 +42,16 @@ def _format_codex_thread_id(session: object) -> str:
     return "无"
 
 
+def _record_has_preview(record: object) -> bool:
+    preview = getattr(record, "preview", None)
+    return isinstance(preview, str) and bool(preview.strip())
+
+
+def _is_missing_thread_error(exc: Exception) -> bool:
+    message = str(exc)
+    return "thread not loaded:" in message or "no rollout found for thread id" in message
+
+
 def build_group(app_state) -> app_commands.Group:
     group = app_commands.Group(name="session", description="会话管理")
 
@@ -61,18 +72,15 @@ def build_group(app_state) -> app_commands.Group:
                 archived=archived,
             )
 
-        await app_state.codex_thread_service.sync_threads_from_payloads(
+        records = await app_state.codex_thread_service.sync_threads_from_payloads(
             workspace_id=workspace.id,
             thread_payloads=thread_payloads,
             archived=archived,
         )
-        return await app_state.codex_thread_service.list_for_workspace(
-            workspace_id=workspace.id,
-            scope=scope,
-            query=search_term,
-            archived=archived,
-            limit=limit,
-        )
+        if scope == "bot":
+            records = [record for record in records if record.source_label == "discord-bot"]
+        records = [record for record in records if _record_has_preview(record)]
+        return records[:limit]
 
     def format_source_label(record) -> str:
         return record.source_label or "unknown"
@@ -142,15 +150,16 @@ def build_group(app_state) -> app_commands.Group:
         scope_value = getattr(interaction.namespace, "scope", "workspace") or "workspace"
         scope = scope_value.value if isinstance(scope_value, app_commands.Choice) else scope_value
         try:
-            records = await sync_workspace_threads(
-                workspace=route.workspace,
+            records = await app_state.codex_thread_service.list_for_workspace(
+                workspace_id=route.workspace.id,
                 scope=scope,
-                search_term=current or None,
-                limit=20,
                 archived=archived,
+                query=current or None,
+                limit=20,
             )
         except Exception:
             return []
+        records = [record for record in records if _record_has_preview(record)]
         current_thread_id = str(interaction.channel.id)
         choices: list[app_commands.Choice[str]] = []
         for record in records[:25]:
@@ -174,6 +183,8 @@ def build_group(app_state) -> app_commands.Group:
             await send_interaction_error(interaction, "当前线程存在运行中的 turn，请先等待完成或手动打断。")
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         try:
             route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
             if _session_is_initialized(route.session):
@@ -184,21 +195,9 @@ def build_group(app_state) -> app_commands.Group:
                 return
             async with app_state.worker_pool.lease(str(interaction.channel.id)) as worker:
                 codex_thread_id = await worker.start_new_thread(route.workspace)
-                thread_payload = await worker.read_thread(codex_thread_id, include_turns=False)
             await app_state.session_service.bind_codex_thread(
                 discord_thread_id=str(interaction.channel.id),
                 codex_thread_id=codex_thread_id,
-            )
-            await app_state.codex_thread_service.sync_thread_from_payload(
-                workspace_id=route.workspace.id,
-                thread_payload=thread_payload,
-                archived=False,
-                source_override={"custom": "discord-bot"},
-            )
-            await app_state.codex_thread_service.ensure_thread_available_for_discord(
-                workspace_id=route.workspace.id,
-                codex_thread_id=codex_thread_id,
-                discord_thread_id=str(interaction.channel.id),
             )
             await app_state.session_service.mark_ready(
                 discord_thread_id=str(interaction.channel.id),
@@ -210,9 +209,14 @@ def build_group(app_state) -> app_commands.Group:
             await send_interaction_error(interaction, f"初始化 Codex 会话失败：{exc}")
             return
 
-        await interaction.response.send_message(
-            f"Codex 会话已准备：`{codex_thread_id}`",
-            ephemeral=True,
+        await send_interaction_message(
+            interaction,
+            "\n".join(
+                [
+                    f"Codex 会话已准备：`{codex_thread_id}`",
+                    "该会话会在首轮对话完成后进入可恢复列表。",
+                ]
+            ),
         )
 
     @group.command(name="status", description="查看当前 Discord 线程的会话状态")
@@ -279,6 +283,8 @@ def build_group(app_state) -> app_commands.Group:
             await send_interaction_error(interaction, "请在论坛线程中执行该命令。")
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         try:
             route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
             records = await sync_workspace_threads(
@@ -303,9 +309,9 @@ def build_group(app_state) -> app_commands.Group:
             return
 
         if not records:
-            await interaction.response.send_message(
+            await send_interaction_message(
+                interaction,
                 f"当前工作区下没有可恢复的 Codex 会话，scope=`{scope}`，include_archived=`{include_archived}`。",
-                ephemeral=True,
             )
             return
 
@@ -324,7 +330,7 @@ def build_group(app_state) -> app_commands.Group:
                     ]
                 )
             )
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+        await send_interaction_message(interaction, "\n".join(lines))
 
     @group.command(name="resume", description="在当前 Discord 线程恢复一个历史 Codex 会话")
     @app_commands.describe(session="要恢复的 Codex 会话", scope="会话范围", takeover="若已被其它 Discord 线程绑定，是否显式接管")
@@ -351,6 +357,8 @@ def build_group(app_state) -> app_commands.Group:
             await send_interaction_error(interaction, "当前线程存在运行中的 turn，请先等待完成或手动打断。")
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         try:
             route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
             if _session_is_initialized(route.session) and route.session.codex_thread_id != session:
@@ -360,8 +368,17 @@ def build_group(app_state) -> app_commands.Group:
                 )
                 return
             browser_key = f"session-browser:{route.workspace.id}"
-            async with app_state.worker_pool.lease(browser_key) as browser:
-                thread_payload = await browser.read_thread(session, include_turns=False)
+            try:
+                async with app_state.worker_pool.lease(browser_key) as browser:
+                    thread_payload = await browser.read_thread(session, include_turns=False)
+            except Exception as exc:
+                if _is_missing_thread_error(exc):
+                    await send_interaction_error(
+                        interaction,
+                        "目标会话当前不可恢复，可能是仅创建但尚未产生任何对话内容的空会话。请直接在当前线程发送消息重新开始，或选择其他历史会话。",
+                    )
+                    return
+                raise
             if not _same_workspace_cwd(thread_payload.get("cwd"), route.workspace.cwd):
                 await send_interaction_error(interaction, "目标会话不属于当前工作区，无法恢复。")
                 return
@@ -441,7 +458,8 @@ def build_group(app_state) -> app_commands.Group:
             await send_interaction_error(interaction, f"恢复 Codex 会话失败：{exc}")
             return
 
-        await interaction.response.send_message(
+        await send_interaction_message(
+            interaction,
             "\n".join(
                 [
                     f"Codex 会话已恢复：`{session}`",
@@ -450,7 +468,6 @@ def build_group(app_state) -> app_commands.Group:
                     "后续直接发消息即可继续该会话。",
                 ]
             ),
-            ephemeral=True,
         )
 
     @group.command(name="detach", description="解除当前 Discord 线程与 Codex 会话的绑定")
@@ -502,6 +519,8 @@ def build_group(app_state) -> app_commands.Group:
             await send_interaction_error(interaction, "当前线程存在运行中的 turn，请先等待完成或手动打断。")
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         try:
             route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
             if not _session_is_initialized(route.session):
@@ -545,9 +564,9 @@ def build_group(app_state) -> app_commands.Group:
             await send_interaction_error(interaction, f"归档 Codex 会话失败：{exc}")
             return
 
-        await interaction.response.send_message(
+        await send_interaction_message(
+            interaction,
             f"已归档当前 Codex 会话：`{route.session.codex_thread_id}`。它默认不会再出现在普通会话列表里。",
-            ephemeral=True,
         )
 
     @group.command(name="unarchive", description="取消归档一个 Codex 会话")
@@ -567,6 +586,8 @@ def build_group(app_state) -> app_commands.Group:
         if not isinstance(interaction.channel, discord.Thread):
             await send_interaction_error(interaction, "请在论坛线程中执行该命令。")
             return
+
+        await interaction.response.defer(ephemeral=True)
 
         try:
             route = await app_state.session_router.ensure_route_for_thread(interaction.channel)
@@ -602,9 +623,9 @@ def build_group(app_state) -> app_commands.Group:
             await send_interaction_error(interaction, f"取消归档 Codex 会话失败：{exc}")
             return
 
-        await interaction.response.send_message(
+        await send_interaction_message(
+            interaction,
             f"已取消归档 Codex 会话：`{session}`。如需继续对话，请执行 `/codex session resume`。",
-            ephemeral=True,
         )
 
     return group

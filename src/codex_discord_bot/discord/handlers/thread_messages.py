@@ -28,6 +28,11 @@ def _session_is_initialized(session: object) -> bool:
     return status != SessionStatus.uninitialized
 
 
+def _is_missing_thread_error(exc: Exception) -> bool:
+    message = str(exc)
+    return "thread not loaded:" in message or "no rollout found for thread id" in message
+
+
 async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message) -> None:
     if message.author.bot:
         return
@@ -65,18 +70,22 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
     is_busy = bot.app_state.worker_pool.is_busy(worker_key)
     worker = bot.app_state.worker_pool.get_worker(worker_key) if is_busy else None
     if route.session.codex_thread_id:
-        try:
-            await bot.app_state.codex_thread_service.ensure_thread_available_for_discord(
-                workspace_id=route.workspace.id,
-                codex_thread_id=route.session.codex_thread_id,
-                discord_thread_id=str(message.channel.id),
-            )
-        except ValueError as exc:
-            await message.reply(
-                f"{exc}\n如需继续当前工作区中的其他会话，请执行 `/codex session resume`。",
-                mention_author=False,
-            )
-            return
+        existing_codex_thread = await bot.app_state.codex_thread_service.get_by_codex_thread_id(
+            route.session.codex_thread_id
+        )
+        if existing_codex_thread is not None:
+            try:
+                await bot.app_state.codex_thread_service.ensure_thread_available_for_discord(
+                    workspace_id=route.workspace.id,
+                    codex_thread_id=route.session.codex_thread_id,
+                    discord_thread_id=str(message.channel.id),
+                )
+            except ValueError as exc:
+                await message.reply(
+                    f"{exc}\n如需继续当前工作区中的其他会话，请执行 `/codex session resume`。",
+                    mention_author=False,
+                )
+                return
 
     if not is_busy and route.session.status == SessionStatus.running:
         await bot.app_state.session_service.mark_ready(
@@ -266,13 +275,51 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
 
     try:
         async with bot.app_state.worker_pool.lease(worker_key) as worker:
-            result = await worker.run_streamed_turn(
-                route.session,
-                route.workspace,
-                input_items,
-                on_event=on_event,
-                on_approval_request=on_approval_request,
-            )
+            try:
+                result = await worker.run_streamed_turn(
+                    route.session,
+                    route.workspace,
+                    input_items,
+                    on_event=on_event,
+                    on_approval_request=on_approval_request,
+                )
+            except Exception as exc:
+                if not route.session.codex_thread_id or not _is_missing_thread_error(exc):
+                    raise
+
+                stale_codex_thread_id = route.session.codex_thread_id
+                logger.warning(
+                    "thread.message.missing_thread_recovered",
+                    error=str(exc),
+                    thread_id=message.channel.id,
+                    stale_codex_thread_id=stale_codex_thread_id,
+                )
+                await bot.app_state.codex_thread_service.release_binding_if_owned(
+                    codex_thread_id=stale_codex_thread_id,
+                    discord_thread_id=str(message.channel.id),
+                )
+                await bot.app_state.session_service.detach_codex_thread(
+                    discord_thread_id=str(message.channel.id),
+                )
+                route.session.codex_thread_id = None
+                route.session.status = SessionStatus.ready
+                await bot.app_state.audit_service.record(
+                    action="thread_message_recovered_missing_thread",
+                    guild_id=str(message.guild.id),
+                    discord_thread_id=str(message.channel.id),
+                    actor_id=str(message.author.id),
+                    payload={
+                        **audit_payload,
+                        "stale_codex_thread_id": stale_codex_thread_id,
+                    },
+                )
+                result = await worker.run_streamed_turn(
+                    route.session,
+                    route.workspace,
+                    input_items,
+                    on_event=on_event,
+                    on_approval_request=on_approval_request,
+                )
             thread_payload = await worker.read_thread(result.thread_id, include_turns=False)
 
         render_result = await controller.finalize(result)
