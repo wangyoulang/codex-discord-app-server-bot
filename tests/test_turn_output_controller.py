@@ -372,6 +372,70 @@ def test_turn_output_controller_sends_image_items_and_does_not_duplicate_on_fina
     asyncio.run(scenario())
 
 
+def test_turn_output_controller_deduplicates_same_image_path_across_different_item_ids(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
+        db = Database(database_url)
+        engine = create_async_engine(database_url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+        image_path = (tmp_path / 'screen.png').resolve()
+        image_path.write_bytes(b'png')
+
+        thread = FakeThread(1485515511394734221)
+        source_message = FakeMessage(thread, 1485523988435173466, "请展示截图")
+        control_message = FakeMessage(thread, 2000, "正在调用 Codex...")
+        settings = Settings(discord_bot_token="token")
+        controller = TurnOutputController(
+            settings=settings,
+            turn_output_service=TurnOutputService(db),
+            source_message=source_message,  # type: ignore[arg-type]
+            control_message=control_message,  # type: ignore[arg-type]
+        )
+
+        await controller.bind_turn(codex_thread_id="thr_1", turn_id="turn_1")
+        await controller.handle_event(
+            ItemCompletedEvent(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                item_id="img_1",
+                item_type="imageView",
+                item={"id": "img_1", "type": "imageView", "path": str(image_path)},
+            )
+        )
+        await controller.handle_event(
+            ItemCompletedEvent(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                item_id="img_2",
+                item_type="imageView",
+                item={"id": "img_2", "type": "imageView", "path": str(image_path)},
+            )
+        )
+
+        result = await controller.finalize(
+            TurnRunResult(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                final_text="",
+                turn_status="completed",
+            )
+        )
+
+        visible_messages = [message for message in thread.sent_messages if not message.deleted]
+        assert len(visible_messages) == 1
+        assert visible_messages[0].file.filename == "screen.png"
+        assert result.message_ids == ["1000"]
+
+        await db.close()
+
+    asyncio.run(scenario())
+
+
 def test_turn_output_controller_does_not_send_placeholder_when_only_images_exist(tmp_path: Path) -> None:
     async def scenario() -> None:
         database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
@@ -658,6 +722,99 @@ def test_turn_output_controller_sends_markdown_link_image_with_caption(tmp_path:
         assert visible_messages[0].file.filename == 'screen.png'
         assert visible_messages[0].reference is source_message
         assert result.message_ids == ['1000']
+
+        await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_turn_output_controller_keeps_caption_when_same_image_path_was_already_sent(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
+        db = Database(database_url)
+        engine = create_async_engine(database_url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+        image_path = (tmp_path / 'screen.png').resolve()
+        image_path.write_bytes(b'png')
+
+        thread = FakeThread(1485515511394734221)
+        source_message = FakeMessage(thread, 1485523988435173466, '请展示截图')
+        control_message = FakeMessage(thread, 2000, '正在调用 Codex...')
+        settings = Settings(discord_bot_token='token')
+        controller = TurnOutputController(
+            settings=settings,
+            turn_output_service=TurnOutputService(db),
+            source_message=source_message,  # type: ignore[arg-type]
+            control_message=control_message,  # type: ignore[arg-type]
+            workspace_cwd=str(tmp_path),
+        )
+
+        await controller.bind_turn(codex_thread_id='thr_1', turn_id='turn_1')
+        await controller.handle_event(
+            ItemCompletedEvent(
+                thread_id='thr_1',
+                turn_id='turn_1',
+                item_id='img_1',
+                item_type='imageView',
+                item={'id': 'img_1', 'type': 'imageView', 'path': str(image_path)},
+            )
+        )
+        await controller.handle_event(
+            ItemStartedEvent(
+                thread_id='thr_1',
+                turn_id='turn_1',
+                item_id='item_1',
+                item_type='agentMessage',
+                item={'id': 'item_1', 'type': 'agentMessage', 'text': ''},
+            )
+        )
+        await controller.handle_event(
+            ItemCompletedEvent(
+                thread_id='thr_1',
+                turn_id='turn_1',
+                item_id='item_1',
+                item_type='agentMessage',
+                item={
+                    'id': 'item_1',
+                    'type': 'agentMessage',
+                    'text': f'截图如下\n[monitor-dashboard.png]({image_path})\n请确认',
+                },
+            )
+        )
+
+        result = await controller.finalize(
+            TurnRunResult(
+                thread_id='thr_1',
+                turn_id='turn_1',
+                final_text='截图如下\n请确认',
+                turn_status='completed',
+                assistant_messages=[
+                    AssistantMessageSnapshot(item_id='item_1', text='截图如下\n请确认')
+                ],
+                image_artifacts=[
+                    OutputImageArtifact(
+                        item_id='item_1:media:0',
+                        path=str(image_path),
+                        source_type='markdownLink',
+                        parent_item_id='item_1',
+                    )
+                ],
+            )
+        )
+
+        visible_messages = [message for message in thread.sent_messages if not message.deleted]
+        assert len(visible_messages) == 2
+        assert visible_messages[0].content is None
+        assert visible_messages[0].file.filename == 'screen.png'
+        assert visible_messages[0].reference is source_message
+        assert visible_messages[1].content == '截图如下\n请确认'
+        assert visible_messages[1].file is None
+        assert result.message_ids == ['1000', '1001']
 
         await db.close()
 

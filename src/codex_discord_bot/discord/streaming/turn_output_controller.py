@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import re
 
 import discord
@@ -71,6 +72,7 @@ class TurnOutputController:
         self._active_agent_item: ActiveAgentItemRender | None = None
         self._finalized_agent_item_ids: set[str] = set()
         self._finalized_image_item_ids: set[str] = set()
+        self._finalized_image_paths: dict[str, str] = {}
         self._finalized_agent_item_texts: list[str] = []
         self._final_message_ids: list[str] = []
         self._persisted_preview_ids: list[str] = []
@@ -530,6 +532,19 @@ class TurnOutputController:
     ) -> bool:
         if artifact.item_id in self._finalized_image_item_ids:
             return False
+        normalized_path = self._normalize_image_path(artifact.path)
+        existing_message_id = self._finalized_image_paths.get(normalized_path)
+        if existing_message_id is not None:
+            self._finalized_image_item_ids.add(artifact.item_id)
+            logger.info(
+                "discord.turn_output.image_deduplicated",
+                turn_id=self.turn_id,
+                item_id=artifact.item_id,
+                source_type=artifact.source_type,
+                path=normalized_path,
+                existing_message_id=existing_message_id,
+            )
+            return False
 
         try:
             loaded_image = load_outbound_image(
@@ -568,12 +583,17 @@ class TurnOutputController:
             return False
 
         self._finalized_image_item_ids.add(artifact.item_id)
+        self._finalized_image_paths[normalized_path] = str(message.id)
         self._final_message_ids.append(str(message.id))
         await self.turn_output_service.set_final_message_ids(
             codex_turn_id=self.turn_id,
             final_message_ids=list(self._final_message_ids),
         )
         return True
+
+    @staticmethod
+    def _normalize_image_path(path: str) -> str:
+        return str(Path(path).resolve(strict=False))
 
     @staticmethod
     def _extract_item_text(item: dict) -> str:
