@@ -59,6 +59,7 @@ class TurnOutputController:
         source_message: discord.Message,
         control_message: discord.Message,
         workspace_cwd: str | None = None,
+        runtime_cwd: str | None = None,
     ) -> None:
         self.settings = settings
         self.turn_output_service = turn_output_service
@@ -66,6 +67,7 @@ class TurnOutputController:
         self.thread = source_message.channel
         self.control_message = control_message
         self.workspace_cwd = workspace_cwd
+        self.runtime_cwd = runtime_cwd
 
         self.codex_thread_id: str | None = None
         self.turn_id: str | None = None
@@ -532,7 +534,26 @@ class TurnOutputController:
     ) -> bool:
         if artifact.item_id in self._finalized_image_item_ids:
             return False
-        normalized_path = self._normalize_image_path(artifact.path)
+
+        try:
+            loaded_image = load_outbound_image(
+                artifact.path,
+                max_bytes=self.settings.discord_outbound_image_max_bytes,
+                workspace_cwd=self.workspace_cwd,
+                runtime_cwd=self.runtime_cwd,
+            )
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            logger.warning(
+                "discord.turn_output.image_missing",
+                turn_id=self.turn_id,
+                item_id=artifact.item_id,
+                source_type=artifact.source_type,
+                path=str(artifact.path),
+                error=str(exc),
+            )
+            return False
+
+        normalized_path = self._normalize_image_path(str(loaded_image.path))
         existing_message_id = self._finalized_image_paths.get(normalized_path)
         if existing_message_id is not None:
             self._finalized_image_item_ids.add(artifact.item_id)
@@ -543,22 +564,6 @@ class TurnOutputController:
                 source_type=artifact.source_type,
                 path=normalized_path,
                 existing_message_id=existing_message_id,
-            )
-            return False
-
-        try:
-            loaded_image = load_outbound_image(
-                artifact.path,
-                max_bytes=self.settings.discord_outbound_image_max_bytes,
-            )
-        except (FileNotFoundError, OSError, ValueError) as exc:
-            logger.warning(
-                "discord.turn_output.image_missing",
-                turn_id=self.turn_id,
-                item_id=artifact.item_id,
-                source_type=artifact.source_type,
-                path=str(artifact.path),
-                error=str(exc),
             )
             return False
 

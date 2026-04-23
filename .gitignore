@@ -12,3 +12,7 @@ state/
 artifacts/
 logs/
 .ace-tool/
+/.playwright-mcp/
+/tmp/
+/AGENTS.md
+/*.png
