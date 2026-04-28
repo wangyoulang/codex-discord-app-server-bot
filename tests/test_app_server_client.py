@@ -24,6 +24,15 @@ class _DummyStream:
         return ""
 
 
+class _ClosingStdout(_DummyStream):
+    def __init__(self, on_readline) -> None:  # noqa: ANN001
+        self.on_readline = on_readline
+
+    def readline(self) -> str:
+        self.on_readline()
+        return ""
+
+
 class _DummyProcess:
     def __init__(self) -> None:
         self.stdin = _DummyStream()
@@ -78,3 +87,17 @@ def test_app_server_client_start_does_not_pass_removed_session_source_flag(monke
 
     assert captured["cmd"] == ["codex", "app-server", "--listen", "stdio://"]
     assert "--session-source" not in captured["cmd"]
+
+
+def test_app_server_client_read_message_handles_close_race() -> None:
+    client = AppServerClient(config=AppServerConfig(codex_bin="codex"))
+    proc = _DummyProcess()
+    proc.stdout = _ClosingStdout(lambda: setattr(client, "_proc", None))
+    client._proc = proc
+
+    try:
+        client._read_message()
+    except RuntimeError as exc:
+        assert "app-server closed stdout" in str(exc)
+    else:
+        raise AssertionError("app-server stdout 关闭时应抛出 RuntimeError")

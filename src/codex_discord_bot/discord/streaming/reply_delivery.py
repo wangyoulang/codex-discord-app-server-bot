@@ -6,14 +6,16 @@ import discord
 
 from codex_discord_bot.discord.streaming.chunker import ChunkMode
 from codex_discord_bot.discord.streaming.chunker import chunk_discord_text
+from codex_discord_bot.discord.streaming.delivery import retry_discord_call
+from codex_discord_bot.discord.streaming.delivery import suppress_discord_delivery_error
 
 
 async def delete_messages(messages: list[discord.Message]) -> None:
     for message in messages:
-        try:
-            await message.delete()
-        except discord.HTTPException:
-            continue
+        await suppress_discord_delivery_error(
+            lambda message=message: message.delete(),
+            operation_name="discord.message.delete",
+        )
 
 
 async def send_text_pages(
@@ -55,10 +57,14 @@ async def send_text_chunks(
     sent_messages: list[discord.Message] = []
     for index, chunk in enumerate(chunks):
         chunk_index = start_index + index
-        sent = await channel.send(
-            content=chunk,
-            reference=reply_to_message if _should_reply(reply_to_message, reply_to_mode, chunk_index) else None,
-            mention_author=False,
+        reference = reply_to_message if _should_reply(reply_to_message, reply_to_mode, chunk_index) else None
+        sent = await retry_discord_call(
+            lambda chunk=chunk, reference=reference: channel.send(
+                content=chunk,
+                reference=reference,
+                mention_author=False,
+            ),
+            operation_name="discord.message.send_text",
         )
         sent_messages.append(sent)
     return sent_messages
@@ -73,11 +79,15 @@ async def send_local_image(
     reply_index: int = 0,
     content: str | None = None,
 ) -> discord.Message:
-    return await channel.send(
-        content=content,
-        file=discord.File(str(image_path), filename=image_path.name),
-        reference=reply_to_message if _should_reply(reply_to_message, reply_to_mode, reply_index) else None,
-        mention_author=False,
+    reference = reply_to_message if _should_reply(reply_to_message, reply_to_mode, reply_index) else None
+    return await retry_discord_call(
+        lambda: channel.send(
+            content=content,
+            file=discord.File(str(image_path), filename=image_path.name),
+            reference=reference,
+            mention_author=False,
+        ),
+        operation_name="discord.message.send_image",
     )
 
 

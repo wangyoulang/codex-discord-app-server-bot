@@ -8,6 +8,7 @@ from codex_discord_bot.codex.approvals import ApprovalEnvelope
 from codex_discord_bot.codex.stream_events import TurnStartedEvent
 from codex_discord_bot.discord.handlers.attachments import build_message_input_items
 from codex_discord_bot.discord.handlers.attachments import collect_supported_attachments
+from codex_discord_bot.discord.streaming.delivery import DiscordDeliveryError
 from codex_discord_bot.discord.streaming.turn_output_controller import TurnOutputController
 from codex_discord_bot.discord.views.approvals import ApprovalDecisionView
 from codex_discord_bot.discord.views.session_controls import SessionControlView
@@ -333,7 +334,7 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
             discord_thread_id=str(message.channel.id),
             codex_thread_id=result.thread_id,
         )
-        if render_result.state.value == "failed":
+        if getattr(render_result.state, "value", render_result.state) == "failed":
             await bot.app_state.session_service.mark_error(
                 discord_thread_id=str(message.channel.id),
                 last_bot_message_id=render_result.last_message_id,
@@ -343,6 +344,13 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
                 discord_thread_id=str(message.channel.id),
                 last_bot_message_id=render_result.last_message_id,
             )
+    except DiscordDeliveryError as exc:
+        logger.warning("thread.message.delivery_failed", error=str(exc), thread_id=message.channel.id)
+        render_result = await controller.delivery_failed(str(exc))
+        await bot.app_state.session_service.mark_ready(
+            discord_thread_id=str(message.channel.id),
+            last_bot_message_id=render_result.last_message_id,
+        )
     except Exception as exc:
         logger.exception("thread.message.failed", error=str(exc), thread_id=message.channel.id)
         render_result = await controller.fail(str(exc))

@@ -7,6 +7,7 @@ from typing import Callable
 
 import discord
 
+from codex_discord_bot.discord.streaming.delivery import suppress_discord_delivery_error
 from codex_discord_bot.logging import get_logger
 
 logger = get_logger(__name__)
@@ -107,7 +108,14 @@ class DiscordDraftStream:
             return
 
         if self._current_message is None:
-            message = await self.channel.send(self._pending_text)
+            message = await suppress_discord_delivery_error(
+                lambda: self.channel.send(self._pending_text),
+                operation_name="discord.preview.send",
+            )
+            if message is None:
+                self._stopped = True
+                logger.warning("discord.preview.stopped", reason="delivery_failed")
+                return
             self._current_message = message
             self._messages.append(message)
             if self.on_message_created is not None:
@@ -115,7 +123,23 @@ class DiscordDraftStream:
                 if created is not None:
                     await created
         else:
-            await self._current_message.edit(content=self._pending_text)
+            async def edit_current_message() -> bool:
+                assert self._current_message is not None
+                await self._current_message.edit(content=self._pending_text)
+                return True
+
+            edited = await suppress_discord_delivery_error(
+                edit_current_message,
+                operation_name="discord.preview.edit",
+            )
+            if edited is None:
+                self._stopped = True
+                logger.warning(
+                    "discord.preview.stopped",
+                    reason="delivery_failed",
+                    message_id=self._current_message.id,
+                )
+                return
 
         self._last_sent_text = self._pending_text
         self._last_flush_at = time.monotonic()

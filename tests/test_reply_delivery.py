@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from codex_discord_bot.discord.streaming import delivery
 from codex_discord_bot.discord.streaming.reply_delivery import send_local_image
 from codex_discord_bot.discord.streaming.reply_delivery import send_text_pages
 
@@ -17,9 +18,11 @@ class FakeMessage:
 
 
 class FakeThread:
-    def __init__(self) -> None:
+    def __init__(self, *, send_failures: int = 0) -> None:
         self._next_id = 1000
         self.sent_messages: list[FakeMessage] = []
+        self.send_failures = send_failures
+        self.send_attempts = 0
 
     async def send(
         self,
@@ -31,6 +34,10 @@ class FakeThread:
         view=None,
     ):  # noqa: ANN001
         del mention_author, view
+        self.send_attempts += 1
+        if self.send_failures > 0:
+            self.send_failures -= 1
+            raise TimeoutError("模拟 Discord 发送超时")
         message = FakeMessage(self, self._next_id, content)
         message.reference = reference
         message.file = file
@@ -56,6 +63,29 @@ def test_send_text_pages_respects_overall_start_index() -> None:
 
         assert len(messages) == 2
         assert [message.reference for message in messages] == [None, None]
+
+    asyncio.run(scenario())
+
+
+def test_send_text_pages_retries_transient_timeout(monkeypatch) -> None:
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    async def scenario() -> None:
+        monkeypatch.setattr(delivery.asyncio, "sleep", no_sleep)
+        channel = FakeThread(send_failures=1)
+
+        messages = await send_text_pages(
+            channel=channel,  # type: ignore[arg-type]
+            text="重试后发送成功",
+            reply_to_message=None,
+            reply_to_mode="first",
+            max_chars=2000,
+            max_lines=10,
+        )
+
+        assert channel.send_attempts == 2
+        assert [message.content for message in messages] == ["重试后发送成功"]
 
     asyncio.run(scenario())
 

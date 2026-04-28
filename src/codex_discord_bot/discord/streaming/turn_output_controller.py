@@ -17,6 +17,8 @@ from codex_discord_bot.codex.stream_renderer import output_images_from_items
 from codex_discord_bot.codex.worker import TurnRunResult
 from codex_discord_bot.config import Settings
 from codex_discord_bot.discord.streaming.chunker import chunk_discord_text
+from codex_discord_bot.discord.streaming.delivery import DiscordDeliveryError
+from codex_discord_bot.discord.streaming.delivery import suppress_discord_delivery_error
 from codex_discord_bot.discord.streaming.draft_stream import DiscordDraftStream
 from codex_discord_bot.discord.streaming.media_loader import load_outbound_image
 from codex_discord_bot.discord.streaming.preview_chunker import PreviewChunkingConfig
@@ -79,6 +81,7 @@ class TurnOutputController:
         self._final_message_ids: list[str] = []
         self._persisted_preview_ids: list[str] = []
         self._persisted_state: TurnOutputState | None = None
+        self._delivery_error_text: str | None = None
 
     def _build_preview_stream(self) -> DiscordDraftStream | None:
         if self.settings.discord_preview_mode == "off":
@@ -117,59 +120,69 @@ class TurnOutputController:
     async def handle_event(self, event: CodexStreamEvent) -> None:
         if self.turn_id is None or getattr(event, "turn_id", None) != self.turn_id:
             return
-        if isinstance(event, ItemStartedEvent):
-            await self._handle_item_started(event)
-            return
-        if isinstance(event, AgentMessageDeltaEvent):
-            await self._handle_agent_delta(event)
-            return
-        if isinstance(event, ItemCompletedEvent):
-            await self._handle_item_completed(event)
+        try:
+            if isinstance(event, ItemStartedEvent):
+                await self._handle_item_started(event)
+                return
+            if isinstance(event, AgentMessageDeltaEvent):
+                await self._handle_agent_delta(event)
+                return
+            if isinstance(event, ItemCompletedEvent):
+                await self._handle_item_completed(event)
+        except DiscordDeliveryError as exc:
+            await self._record_delivery_failure(str(exc))
 
     async def finalize(self, result: TurnRunResult) -> TurnRenderFinalizeResult:
         if self.turn_id is None:
             await self.bind_turn(codex_thread_id=result.thread_id, turn_id=result.turn_id)
 
-        remaining_image_artifacts = list(result.image_artifacts)
-        if self._active_agent_item is not None:
-            active_text = self._active_agent_item.clean_text.strip()
-            if not active_text and result.assistant_messages:
-                fallback = next(
-                    (
-                        snapshot.text
-                        for snapshot in result.assistant_messages
-                        if snapshot.item_id == self._active_agent_item.item_id
-                    ),
-                    "",
-                )
-                active_text = fallback.strip()
-            active_media_artifacts, remaining_image_artifacts = self._split_image_artifacts_for_parent(
-                remaining_image_artifacts,
-                self._active_agent_item.item_id,
-            )
-            await self._finalize_agent_item(
-                final_text=active_text or None,
-                media_artifacts=active_media_artifacts,
-            )
-
-        if result.assistant_messages:
-            pending_snapshots = self._resolve_pending_snapshots(result.assistant_messages)
-            for snapshot in pending_snapshots:
-                snapshot_media, remaining_image_artifacts = self._split_image_artifacts_for_parent(
+        try:
+            remaining_image_artifacts = list(result.image_artifacts)
+            if self._active_agent_item is not None:
+                active_text = self._active_agent_item.clean_text.strip()
+                if not active_text and result.assistant_messages:
+                    fallback = next(
+                        (
+                            snapshot.text
+                            for snapshot in result.assistant_messages
+                            if snapshot.item_id == self._active_agent_item.item_id
+                        ),
+                        "",
+                    )
+                    active_text = fallback.strip()
+                active_media_artifacts, remaining_image_artifacts = self._split_image_artifacts_for_parent(
                     remaining_image_artifacts,
-                    snapshot.item_id,
+                    self._active_agent_item.item_id,
                 )
-                if snapshot.item_id in self._finalized_agent_item_ids:
-                    continue
-                await self._send_snapshot_fallback(snapshot, snapshot_media)
-        elif not self._final_message_ids and result.final_text.strip():
-            await self._send_text_as_new_final_messages(result.final_text.strip())
+                await self._finalize_agent_item(
+                    final_text=active_text or None,
+                    media_artifacts=active_media_artifacts,
+                )
 
-        for artifact in remaining_image_artifacts:
-            await self._send_image_artifact_if_needed(artifact)
+            if result.assistant_messages:
+                pending_snapshots = self._resolve_pending_snapshots(result.assistant_messages)
+                for snapshot in pending_snapshots:
+                    snapshot_media, remaining_image_artifacts = self._split_image_artifacts_for_parent(
+                        remaining_image_artifacts,
+                        snapshot.item_id,
+                    )
+                    if snapshot.item_id in self._finalized_agent_item_ids:
+                        continue
+                    await self._send_snapshot_fallback(snapshot, snapshot_media)
+            elif not self._final_message_ids and result.final_text.strip():
+                await self._send_text_as_new_final_messages(result.final_text.strip())
+
+            for artifact in remaining_image_artifacts:
+                await self._send_image_artifact_if_needed(artifact)
+        except DiscordDeliveryError as exc:
+            await self._record_delivery_failure(str(exc))
 
         final_state = self._map_turn_status(result.turn_status)
-        await self._set_state(final_state, error_text=result.error_message)
+        final_error_text = result.error_message
+        if self._delivery_error_text is not None and final_state == TurnOutputState.completed:
+            final_state = TurnOutputState.delivery_failed
+            final_error_text = self._delivery_error_text
+        await self._set_state(final_state, error_text=final_error_text)
         await self._edit_control_message(self._build_control_summary(final_state, len(self._final_message_ids)))
 
         return TurnRenderFinalizeResult(
@@ -199,6 +212,17 @@ class TurnOutputController:
             message_ids=[last_message_id],
             last_message_id=last_message_id,
             state=TurnOutputState.failed,
+        )
+
+    async def delivery_failed(self, error_text: str) -> TurnRenderFinalizeResult:
+        await self._record_delivery_failure(error_text)
+        await self._edit_control_message(f"Codex 已完成，但 Discord 输出投递失败：{error_text}")
+        return TurnRenderFinalizeResult(
+            message_ids=list(self._final_message_ids),
+            last_message_id=(
+                self._final_message_ids[-1] if self._final_message_ids else str(self.control_message.id)
+            ),
+            state=TurnOutputState.delivery_failed,
         )
 
     async def _handle_item_started(self, event: ItemStartedEvent) -> None:
@@ -326,7 +350,10 @@ class TurnOutputController:
         self._persisted_state = state
 
     async def _edit_control_message(self, content: str) -> None:
-        await self.control_message.edit(content=content)
+        await suppress_discord_delivery_error(
+            lambda: self.control_message.edit(content=content),
+            operation_name="discord.control_message.edit",
+        )
 
     def _map_turn_status(self, turn_status: str) -> TurnOutputState:
         if turn_status == "interrupted":
@@ -338,11 +365,24 @@ class TurnOutputController:
     def _build_control_summary(self, state: TurnOutputState, page_count: int) -> str:
         if state == TurnOutputState.completed:
             return f"Codex 已完成，共发送 {page_count} 条输出消息。"
+        if state == TurnOutputState.delivery_failed:
+            return f"Codex 已完成，但 Discord 输出投递失败，已保留 {page_count} 条输出消息。"
         if state == TurnOutputState.interrupted:
             return f"Codex 已中断，已保留 {page_count} 条输出消息。"
         if state == TurnOutputState.failed:
             return f"Codex 执行失败，已保留 {page_count} 条输出消息。"
         return "Codex 正在处理..."
+
+    async def _record_delivery_failure(self, error_text: str) -> None:
+        if self._delivery_error_text is None:
+            self._delivery_error_text = error_text
+        logger.warning(
+            "discord.turn_output.delivery_failed",
+            turn_id=self.turn_id,
+            error=error_text,
+        )
+        if self.turn_id is not None:
+            await self._set_state(TurnOutputState.delivery_failed, error_text=error_text)
 
     def _reply_target_for_new_messages(self) -> discord.Message | None:
         if self.settings.discord_reply_to_mode == "none":
@@ -576,7 +616,8 @@ class TurnOutputController:
                 reply_index=len(self._final_message_ids),
                 content=content,
             )
-        except (OSError, discord.HTTPException) as exc:
+        except (OSError, DiscordDeliveryError, discord.HTTPException) as exc:
+            await self._record_delivery_failure(str(exc))
             logger.warning(
                 "discord.turn_output.image_send_failed",
                 turn_id=self.turn_id,

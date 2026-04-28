@@ -17,6 +17,7 @@ class TurnOutputState(str, Enum):
     completed = "completed"
     interrupted = "interrupted"
     failed = "failed"
+    delivery_failed = "delivery_failed"
 
 
 class PendingRequestType(str, Enum):

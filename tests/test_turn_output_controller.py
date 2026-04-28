@@ -12,6 +12,7 @@ from codex_discord_bot.codex.stream_renderer import AssistantMessageSnapshot
 from codex_discord_bot.codex.stream_renderer import OutputImageArtifact
 from codex_discord_bot.codex.worker import TurnRunResult
 from codex_discord_bot.config import Settings
+from codex_discord_bot.discord.streaming import delivery
 from codex_discord_bot.discord.streaming.turn_output_controller import TurnOutputController
 from codex_discord_bot.persistence.db import Database
 from codex_discord_bot.persistence.models import Base
@@ -20,7 +21,14 @@ from codex_discord_bot.services.turn_output_service import TurnOutputService
 
 
 class FakeMessage:
-    def __init__(self, channel: "FakeThread", message_id: int, content: str | None) -> None:
+    def __init__(
+        self,
+        channel: "FakeThread",
+        message_id: int,
+        content: str | None,
+        *,
+        edit_failures: int = 0,
+    ) -> None:
         self.channel = channel
         self.id = message_id
         self.content = content
@@ -28,8 +36,14 @@ class FakeMessage:
         self.reference = None
         self.view = None
         self.file = None
+        self.edit_failures = edit_failures
+        self.edit_attempts = 0
 
     async def edit(self, *, content: str, view=None) -> None:  # noqa: ANN001
+        self.edit_attempts += 1
+        if self.edit_failures > 0:
+            self.edit_failures -= 1
+            raise TimeoutError("模拟 Discord 编辑超时")
         self.content = content
         self.view = view
 
@@ -38,10 +52,12 @@ class FakeMessage:
 
 
 class FakeThread:
-    def __init__(self, channel_id: int) -> None:
+    def __init__(self, channel_id: int, *, send_failures: int = 0) -> None:
         self.id = channel_id
         self.sent_messages: list[FakeMessage] = []
         self._next_id = 1000
+        self.send_failures = send_failures
+        self.send_attempts = 0
 
     async def send(
         self,
@@ -52,6 +68,10 @@ class FakeThread:
         file=None,
     ):  # noqa: ANN001
         del mention_author
+        self.send_attempts += 1
+        if self.send_failures > 0:
+            self.send_failures -= 1
+            raise TimeoutError("模拟 Discord 发送超时")
         message = FakeMessage(self, self._next_id, content)
         message.reference = reference
         message.view = view
@@ -306,6 +326,144 @@ def test_turn_output_controller_defaults_to_completed_message_blocks_without_pre
         assert isinstance(latest, DiscordTurnOutput)
         assert latest.preview_message_ids_json == []
         assert latest.final_message_ids_json == ["1000", "1001"]
+
+        await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_turn_output_controller_ignores_control_message_edit_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    async def scenario() -> None:
+        monkeypatch.setattr(delivery.asyncio, "sleep", no_sleep)
+        database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
+        db = Database(database_url)
+        engine = create_async_engine(database_url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+        thread = FakeThread(1485515511394734221)
+        source_message = FakeMessage(thread, 1485523988435173466, "请继续")
+        control_message = FakeMessage(
+            thread,
+            2000,
+            "正在调用 Codex...",
+            edit_failures=99,
+        )
+        settings = Settings(discord_bot_token="token")
+        controller = TurnOutputController(
+            settings=settings,
+            turn_output_service=TurnOutputService(db),
+            source_message=source_message,  # type: ignore[arg-type]
+            control_message=control_message,  # type: ignore[arg-type]
+        )
+
+        await controller.bind_turn(codex_thread_id="thr_1", turn_id="turn_1")
+        await controller.handle_event(
+            ItemStartedEvent(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                item_id="item_1",
+                item_type="agentMessage",
+                item={"id": "item_1", "type": "agentMessage", "text": ""},
+            )
+        )
+        await controller.handle_event(
+            ItemCompletedEvent(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                item_id="item_1",
+                item_type="agentMessage",
+                item={"id": "item_1", "type": "agentMessage", "text": "最终回复"},
+            )
+        )
+
+        result = await controller.finalize(
+            TurnRunResult(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                final_text="最终回复",
+                turn_status="completed",
+                assistant_messages=[
+                    AssistantMessageSnapshot(item_id="item_1", text="最终回复")
+                ],
+            )
+        )
+
+        visible_messages = [message for message in thread.sent_messages if not message.deleted]
+        assert [message.content for message in visible_messages] == ["最终回复"]
+        assert result.message_ids == ["1000"]
+        assert result.state.value == "completed"
+        assert control_message.content == "正在调用 Codex..."
+        assert control_message.edit_attempts >= 4
+
+        latest = await TurnOutputService(db).get_by_turn_id("turn_1")
+        assert isinstance(latest, DiscordTurnOutput)
+        assert latest.state.value == "completed"
+        assert latest.final_message_ids_json == ["1000"]
+
+        await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_turn_output_controller_marks_delivery_failed_when_final_text_send_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    async def scenario() -> None:
+        monkeypatch.setattr(delivery.asyncio, "sleep", no_sleep)
+        database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
+        db = Database(database_url)
+        engine = create_async_engine(database_url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+        thread = FakeThread(1485515511394734221, send_failures=99)
+        source_message = FakeMessage(thread, 1485523988435173466, "请继续")
+        control_message = FakeMessage(thread, 2000, "正在调用 Codex...")
+        settings = Settings(discord_bot_token="token")
+        controller = TurnOutputController(
+            settings=settings,
+            turn_output_service=TurnOutputService(db),
+            source_message=source_message,  # type: ignore[arg-type]
+            control_message=control_message,  # type: ignore[arg-type]
+        )
+
+        await controller.bind_turn(codex_thread_id="thr_1", turn_id="turn_1")
+
+        result = await controller.finalize(
+            TurnRunResult(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                final_text="最终回复",
+                turn_status="completed",
+            )
+        )
+
+        assert thread.sent_messages == []
+        assert thread.send_attempts == 4
+        assert result.message_ids == []
+        assert result.last_message_id == "2000"
+        assert result.state.value == "delivery_failed"
+        assert control_message.content == "Codex 已完成，但 Discord 输出投递失败，已保留 0 条输出消息。"
+
+        latest = await TurnOutputService(db).get_by_turn_id("turn_1")
+        assert isinstance(latest, DiscordTurnOutput)
+        assert latest.state.value == "delivery_failed"
+        assert latest.error_text is not None
+        assert "Discord 投递失败" in latest.error_text
+        assert latest.final_message_ids_json == []
 
         await db.close()
 

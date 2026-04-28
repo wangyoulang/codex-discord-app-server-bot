@@ -228,13 +228,14 @@ class AppServerClient:
             self._proc.stdin.flush()
 
     def _read_message(self) -> dict[str, Any]:
-        if self._proc is None or self._proc.stdout is None:
+        proc = self._proc
+        if proc is None or proc.stdout is None:
             raise RuntimeError("app-server is not running")
-        line = self._proc.stdout.readline()
+        line = proc.stdout.readline()
         if not line:
             stderr_tail = ""
-            if self._proc.stderr is not None:
-                stderr_tail = self._proc.stderr.read(2000)
+            if proc.stderr is not None:
+                stderr_tail = proc.stderr.read(2000)
             raise RuntimeError(f"app-server closed stdout: {stderr_tail}")
         payload = json.loads(line)
         if not isinstance(payload, dict):
