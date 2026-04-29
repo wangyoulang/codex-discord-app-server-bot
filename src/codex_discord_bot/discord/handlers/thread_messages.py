@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 import discord
@@ -17,6 +18,16 @@ from codex_discord_bot.persistence.enums import SessionStatus
 
 logger = get_logger(__name__)
 
+
+class CodexTurnTimeoutError(TimeoutError):
+    def __init__(self, timeout_seconds: int) -> None:
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"Codex 执行超过 {timeout_seconds} 秒仍未结束，已重置当前 worker。"
+            "可能原因是上下文过大、app-server 卡住或未返回终止事件。"
+        )
+
+
 if TYPE_CHECKING:
     from codex_discord_bot.discord.bot import CodexDiscordBot
 
@@ -32,6 +43,43 @@ def _session_is_initialized(session: object) -> bool:
 def _is_missing_thread_error(exc: Exception) -> bool:
     message = str(exc)
     return "thread not loaded:" in message or "no rollout found for thread id" in message
+
+
+async def _run_codex_turn_with_timeout(
+    worker: object,
+    session: object,
+    workspace: object,
+    input_items: object,
+    *,
+    on_event: object,
+    on_approval_request: object,
+    timeout_seconds: int,
+) -> object:
+    run_streamed_turn = getattr(worker, "run_streamed_turn")
+    if timeout_seconds <= 0:
+        return await run_streamed_turn(
+            session,
+            workspace,
+            input_items,
+            on_event=on_event,
+            on_approval_request=on_approval_request,
+        )
+
+    task = asyncio.create_task(
+        run_streamed_turn(
+            session,
+            workspace,
+            input_items,
+            on_event=on_event,
+            on_approval_request=on_approval_request,
+        )
+    )
+    done, _pending = await asyncio.wait({task}, timeout=timeout_seconds)
+    if task in done:
+        return await task
+
+    task.cancel()
+    raise CodexTurnTimeoutError(timeout_seconds)
 
 
 async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message) -> None:
@@ -273,16 +321,19 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
         discord_thread_id=str(message.channel.id),
         last_bot_message_id=str(control_message.id),
     )
+    turn_timeout_seconds = getattr(bot.app_state.settings, "codex_turn_timeout_seconds", 1800)
 
     try:
         async with bot.app_state.worker_pool.lease(worker_key) as worker:
             try:
-                result = await worker.run_streamed_turn(
+                result = await _run_codex_turn_with_timeout(
+                    worker,
                     route.session,
                     route.workspace,
                     input_items,
                     on_event=on_event,
                     on_approval_request=on_approval_request,
+                    timeout_seconds=turn_timeout_seconds,
                 )
             except Exception as exc:
                 if not route.session.codex_thread_id or not _is_missing_thread_error(exc):
@@ -314,12 +365,14 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
                         "stale_codex_thread_id": stale_codex_thread_id,
                     },
                 )
-                result = await worker.run_streamed_turn(
+                result = await _run_codex_turn_with_timeout(
+                    worker,
                     route.session,
                     route.workspace,
                     input_items,
                     on_event=on_event,
                     on_approval_request=on_approval_request,
+                    timeout_seconds=turn_timeout_seconds,
                 )
             thread_payload = await worker.read_thread(result.thread_id, include_turns=False)
 
@@ -344,6 +397,32 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
                 discord_thread_id=str(message.channel.id),
                 last_bot_message_id=render_result.last_message_id,
             )
+    except CodexTurnTimeoutError as exc:
+        logger.warning(
+            "thread.message.turn_timeout",
+            timeout_seconds=exc.timeout_seconds,
+            thread_id=message.channel.id,
+            codex_thread_id=route.session.codex_thread_id,
+            turn_id=getattr(controller, "turn_id", None),
+        )
+        await bot.app_state.worker_pool.force_reset(worker_key)
+        await bot.app_state.audit_service.record(
+            action="thread_message_turn_timeout",
+            guild_id=str(message.guild.id),
+            discord_thread_id=str(message.channel.id),
+            actor_id=str(message.author.id),
+            payload={
+                **audit_payload,
+                "codex_thread_id": route.session.codex_thread_id,
+                "turn_id": getattr(controller, "turn_id", None),
+                "timeout_seconds": exc.timeout_seconds,
+            },
+        )
+        render_result = await controller.fail(str(exc))
+        await bot.app_state.session_service.mark_error(
+            discord_thread_id=str(message.channel.id),
+            last_bot_message_id=render_result.last_message_id,
+        )
     except DiscordDeliveryError as exc:
         logger.warning("thread.message.delivery_failed", error=str(exc), thread_id=message.channel.id)
         render_result = await controller.delivery_failed(str(exc))

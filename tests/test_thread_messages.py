@@ -386,6 +386,171 @@ def test_initialized_thread_recovers_when_bound_thread_is_missing() -> None:
     asyncio.run(scenario())
 
 
+def test_initialized_thread_marks_error_and_resets_worker_when_turn_times_out() -> None:
+    class RunningThread(FakeThread):
+        def __init__(self, thread_id: str) -> None:
+            super().__init__(thread_id)
+            self.sent_messages: list[dict[str, object]] = []
+
+        async def send(self, content: str, **kwargs) -> SimpleNamespace:
+            self.sent_messages.append({"content": content, **kwargs})
+            return SimpleNamespace(id=999, content=content)
+
+    class SlowWorker:
+        async def run_streamed_turn(
+            self,
+            _session,
+            _workspace,
+            _input_items,
+            *,
+            on_event,
+            on_approval_request,
+        ):
+            del on_event, on_approval_request
+            await asyncio.Event().wait()
+
+    class FakeLease:
+        def __init__(self, worker: SlowWorker) -> None:
+            self.worker = worker
+
+        async def __aenter__(self) -> SlowWorker:
+            return self.worker
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            del exc_type, exc, tb
+            return False
+
+    class FakeWorkerPool:
+        def __init__(self, worker: SlowWorker) -> None:
+            self.worker = worker
+            self.reset_calls: list[str] = []
+
+        def is_busy(self, _thread_id: str) -> bool:
+            return False
+
+        def get_worker(self, _thread_id: str) -> None:
+            return None
+
+        def lease(self, _key: str) -> FakeLease:
+            return FakeLease(self.worker)
+
+        async def force_reset(self, worker_key: str) -> None:
+            self.reset_calls.append(worker_key)
+
+    class FakeSessionService:
+        def __init__(self) -> None:
+            self.running_calls: list[dict[str, str | None]] = []
+            self.error_calls: list[dict[str, str | None]] = []
+
+        async def mark_running(
+            self,
+            *,
+            discord_thread_id: str,
+            active_turn_id: str | None = None,
+            last_bot_message_id: str | None = None,
+        ) -> None:
+            self.running_calls.append(
+                {
+                    "discord_thread_id": discord_thread_id,
+                    "active_turn_id": active_turn_id,
+                    "last_bot_message_id": last_bot_message_id,
+                }
+            )
+
+        async def mark_error(
+            self,
+            *,
+            discord_thread_id: str,
+            last_bot_message_id: str | None = None,
+        ) -> None:
+            self.error_calls.append(
+                {
+                    "discord_thread_id": discord_thread_id,
+                    "last_bot_message_id": last_bot_message_id,
+                }
+            )
+
+    class FakeCodexThreadService:
+        async def get_by_codex_thread_id(self, _codex_thread_id: str) -> None:
+            return None
+
+    fail_errors: list[str] = []
+
+    class FakeTurnOutputController:
+        turn_id = None
+
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        async def bind_turn(self, *, codex_thread_id: str, turn_id: str) -> None:
+            del codex_thread_id, turn_id
+
+        async def handle_event(self, _event) -> None:
+            return None
+
+        async def fail(self, error: str) -> SimpleNamespace:
+            fail_errors.append(error)
+            return SimpleNamespace(last_message_id="999")
+
+    async def scenario() -> None:
+        worker = SlowWorker()
+        worker_pool = FakeWorkerPool(worker)
+        audit_service = FakeAuditService()
+        session_service = FakeSessionService()
+        route = SimpleNamespace(
+            workspace=SimpleNamespace(id=6, cwd="/repo"),
+            session=SimpleNamespace(
+                codex_thread_id="thr_1",
+                status=SessionStatus.ready,
+                active_turn_id=None,
+            ),
+        )
+        bot = SimpleNamespace(
+            app_state=SimpleNamespace(
+                session_router=SimpleNamespace(
+                    ensure_route_for_thread=_async_return(route),
+                ),
+                audit_service=audit_service,
+                worker_pool=worker_pool,
+                codex_thread_service=FakeCodexThreadService(),
+                session_service=session_service,
+                artifact_service=SimpleNamespace(artifact_root="/tmp"),
+                settings=SimpleNamespace(codex_turn_timeout_seconds=0.01),
+                turn_output_service=SimpleNamespace(),
+                approval_service=SimpleNamespace(),
+            )
+        )
+        message = FakeMessage(RunningThread("1003"), content="会卡住的问题")
+
+        with patch.object(thread_messages.discord, "Thread", FakeThread):
+            with patch.object(thread_messages, "collect_supported_attachments", _async_return([])):
+                with patch.object(
+                    thread_messages,
+                    "build_message_input_items",
+                    lambda **_kwargs: [{"type": "text", "text": "会卡住的问题"}],
+                ):
+                    with patch.object(thread_messages, "TurnOutputController", FakeTurnOutputController):
+                        with patch.object(
+                            thread_messages,
+                            "SessionControlView",
+                            lambda _app_state: object(),
+                        ):
+                            await thread_messages.handle_thread_message(bot, message)
+
+        assert worker_pool.reset_calls == ["1003"]
+        assert session_service.error_calls == [
+            {
+                "discord_thread_id": "1003",
+                "last_bot_message_id": "999",
+            }
+        ]
+        assert any("Codex 执行超过 0.01 秒仍未结束" in error for error in fail_errors)
+        assert audit_service.records[-1]["action"] == "thread_message_turn_timeout"
+        assert audit_service.records[-1]["payload"]["timeout_seconds"] == 0.01
+
+    asyncio.run(scenario())
+
+
 def _async_return(value):
     async def inner(*args, **kwargs):
         del args, kwargs

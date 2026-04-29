@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     codex_https_proxy: str | None = None
     codex_all_proxy: str | None = None
     codex_no_proxy: str | None = None
+    codex_turn_timeout_seconds: int = 1800
     worker_idle_timeout_seconds: int = 900
 
     discord_preview_mode: Literal["off", "partial", "block"] = "off"
