@@ -6,6 +6,7 @@ import os
 import discord
 from discord import app_commands
 
+from codex_discord_bot.discord.context_usage import format_context_usage_detail_lines
 from codex_discord_bot.discord.handlers.interactions import send_interaction_error
 from codex_discord_bot.discord.handlers.interactions import send_interaction_message
 from codex_discord_bot.persistence.enums import SessionStatus
@@ -260,6 +261,11 @@ def build_group(app_state) -> app_commands.Group:
                     f"preview_count: `{len(latest_output.preview_message_ids_json or []) if latest_output is not None else 0}`",
                     f"final_page_count: `{len(latest_output.final_message_ids_json or []) if latest_output is not None else 0}`",
                     f"active_agent_item_id: `{latest_output.active_agent_item_id if latest_output is not None else '无'}`",
+                    *format_context_usage_detail_lines(
+                        getattr(latest_output, "token_usage_json", None)
+                        if latest_output is not None
+                        else None
+                    ),
                     f"worker_active: `{worker_active}`",
                 ]
             ),

@@ -8,8 +8,11 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from codex_discord_bot.codex.stream_events import AgentMessageDeltaEvent
 from codex_discord_bot.codex.stream_events import ItemCompletedEvent
 from codex_discord_bot.codex.stream_events import ItemStartedEvent
+from codex_discord_bot.codex.stream_events import TokenUsageUpdatedEvent
 from codex_discord_bot.codex.stream_renderer import AssistantMessageSnapshot
 from codex_discord_bot.codex.stream_renderer import OutputImageArtifact
+from codex_discord_bot.codex.token_usage import TokenUsageBreakdown
+from codex_discord_bot.codex.token_usage import TokenUsageSnapshot
 from codex_discord_bot.codex.worker import TurnRunResult
 from codex_discord_bot.config import Settings
 from codex_discord_bot.discord.streaming import delivery
@@ -164,6 +167,78 @@ def test_turn_output_controller_keeps_progress_messages_separate_and_only_replie
         assert visible_messages[1].reference is None
         assert result.message_ids == ["1000", "1001"]
         assert control_message.content == "Codex 已完成，共发送 2 条输出消息。"
+
+        await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_turn_output_controller_renders_and_persists_context_usage(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
+        db = Database(database_url)
+        engine = create_async_engine(database_url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+        thread = FakeThread(1485470675786399764)
+        source_message = FakeMessage(thread, 1485515772351746099, "继续")
+        control_message = FakeMessage(thread, 2000, "正在调用 Codex...")
+        settings = Settings(discord_bot_token="token")
+        controller = TurnOutputController(
+            settings=settings,
+            turn_output_service=TurnOutputService(db),
+            source_message=source_message,  # type: ignore[arg-type]
+            control_message=control_message,  # type: ignore[arg-type]
+        )
+
+        await controller.bind_turn(codex_thread_id="thr_1", turn_id="turn_1")
+        await controller.handle_event(
+            TokenUsageUpdatedEvent(
+                snapshot=TokenUsageSnapshot(
+                    thread_id="thr_1",
+                    turn_id="turn_1",
+                    last=TokenUsageBreakdown(
+                        total_tokens=116_536,
+                        input_tokens=115_000,
+                        cached_input_tokens=4_000,
+                        output_tokens=1_200,
+                        reasoning_output_tokens=336,
+                    ),
+                    total=TokenUsageBreakdown(total_tokens=12_388_675),
+                    model_context_window=258_400,
+                )
+            )
+        )
+
+        assert control_message.content == (
+            "正在调用 Codex...\n"
+            "上下文：116.5K / 258.4K（45%） [█████░░░░░]\n"
+            "累计：12.4M tokens"
+        )
+
+        record = await TurnOutputService(db).get_by_turn_id("turn_1")
+        assert record is not None
+        assert record.token_usage_json is not None
+        assert record.token_usage_json["last"]["total_tokens"] == 116_536
+
+        result = await controller.finalize(
+            TurnRunResult(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                final_text="已完成",
+                turn_status="completed",
+                assistant_messages=[],
+            )
+        )
+
+        assert result.state.value == "completed"
+        assert control_message.content == (
+            "Codex 已完成，共发送 1 条输出消息。\n"
+            "上下文：116.5K / 258.4K（45%） [█████░░░░░]\n"
+            "累计：12.4M tokens"
+        )
 
         await db.close()
 

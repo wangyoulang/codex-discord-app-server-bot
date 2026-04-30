@@ -6,6 +6,7 @@ from codex_discord_bot.codex.app_server_client import Notification
 from codex_discord_bot.codex.stream_events import AgentMessageDeltaEvent
 from codex_discord_bot.codex.stream_events import ItemCompletedEvent
 from codex_discord_bot.codex.stream_events import ItemStartedEvent
+from codex_discord_bot.codex.stream_events import TokenUsageUpdatedEvent
 from codex_discord_bot.codex.stream_events import TurnCompletedEvent
 from codex_discord_bot.codex.stream_events import TurnStartedEvent
 from codex_discord_bot.codex.stream_renderer import OutputImageArtifact
@@ -185,6 +186,111 @@ def test_worker_uses_only_cwd_overrides_for_local_codex_config() -> None:
         assert result.turn_status == "completed"
         assert fake_client.thread_start_params == {"cwd": "/repo"}
         assert fake_client.turn_start_params == {"cwd": "/repo"}
+
+    asyncio.run(scenario())
+
+
+def test_worker_emits_token_usage_updates() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.notifications = [
+                Notification(
+                    method="thread/tokenUsage/updated",
+                    payload={
+                        "threadId": "thr_1",
+                        "turnId": "turn_1",
+                        "tokenUsage": {
+                            "last": {
+                                "totalTokens": 116_536,
+                                "inputTokens": 115_000,
+                                "cachedInputTokens": 4_000,
+                                "outputTokens": 1_200,
+                                "reasoningOutputTokens": 336,
+                            },
+                            "total": {
+                                "totalTokens": 12_388_675,
+                                "inputTokens": 12_300_000,
+                                "cachedInputTokens": 8_000_000,
+                                "outputTokens": 80_000,
+                                "reasoningOutputTokens": 8_675,
+                            },
+                            "modelContextWindow": 258_400,
+                        },
+                    },
+                ),
+                Notification(
+                    method="turn/completed",
+                    payload={
+                        "threadId": "thr_1",
+                        "turn": {"id": "turn_1", "status": "completed"},
+                    },
+                ),
+            ]
+
+        def thread_start(self, params: dict) -> dict:
+            assert params == {"cwd": "/repo"}
+            return {"thread": {"id": "thr_1"}}
+
+        def turn_start(self, thread_id: str, text: str, *, params: dict | None = None) -> dict:
+            assert thread_id == "thr_1"
+            assert text == "你好"
+            assert params == {"cwd": "/repo"}
+            return {"turn": {"id": "turn_1"}}
+
+        def next_notification(self) -> Notification:
+            return self.notifications.pop(0)
+
+        def thread_read(self, thread_id: str, *, include_turns: bool) -> dict:
+            assert thread_id == "thr_1"
+            assert include_turns is True
+            return {
+                "thread": {
+                    "turns": [
+                        {
+                            "id": "turn_1",
+                            "items": [{"type": "agentMessage", "text": "已完成"}],
+                        }
+                    ]
+                }
+            }
+
+    async def scenario() -> None:
+        settings = Settings(discord_bot_token="token")
+        worker = CodexWorker(settings, worker_key="thread-1")
+        worker._client = FakeClient()  # type: ignore[assignment]
+        session = DiscordSession(
+            discord_thread_id="discord_thread_1",
+            workspace_id=1,
+            status=SessionStatus.ready,
+        )
+        workspace = Workspace(
+            guild_id="guild_1",
+            forum_channel_id="forum_1",
+            name="demo",
+            cwd="/repo",
+        )
+        events = []
+
+        async def collect_event(event) -> None:
+            events.append(event)
+
+        async def noop_approval(_envelope) -> dict:
+            return {"decision": "decline"}
+
+        result = await worker.run_streamed_text_turn(
+            session,
+            workspace,
+            "你好",
+            on_event=collect_event,
+            on_approval_request=noop_approval,
+        )
+
+        usage_events = [event for event in events if isinstance(event, TokenUsageUpdatedEvent)]
+        assert result.final_text == "已完成"
+        assert len(usage_events) == 1
+        assert usage_events[0].snapshot.model_context_window == 258_400
+        assert usage_events[0].snapshot.last.total_tokens == 116_536
+        assert usage_events[0].snapshot.total.total_tokens == 12_388_675
 
     asyncio.run(scenario())
 

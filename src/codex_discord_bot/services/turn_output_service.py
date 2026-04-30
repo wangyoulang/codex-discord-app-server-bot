@@ -99,6 +99,20 @@ class TurnOutputService:
             record.active_agent_item_id = active_agent_item_id
             return await repo.save(record)
 
+    async def set_token_usage(
+        self,
+        *,
+        codex_turn_id: str,
+        token_usage: dict[str, object],
+    ) -> DiscordTurnOutput:
+        async with self.db.session() as session:
+            repo = DiscordTurnOutputRepository(session)
+            record = await repo.get_by_turn_id(codex_turn_id)
+            if record is None:
+                raise ValueError("turn 输出记录不存在，无法更新 token usage")
+            record.token_usage_json = token_usage
+            return await repo.save(record)
+
     async def set_state(
         self,
         *,

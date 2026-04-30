@@ -103,6 +103,7 @@ class DiscordTurnOutput(Base):
     control_message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     preview_message_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     final_message_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    token_usage_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     active_agent_item_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     state: Mapped[TurnOutputState] = mapped_column(
         SqlEnum(TurnOutputState, native_enum=False),

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from codex_discord_bot.codex.token_usage import TokenUsageSnapshot
+
 
 @dataclass(slots=True)
 class TurnStartedEvent:
@@ -44,10 +46,24 @@ class TurnCompletedEvent:
     error_message: str | None = None
 
 
+@dataclass(slots=True)
+class TokenUsageUpdatedEvent:
+    snapshot: TokenUsageSnapshot
+
+    @property
+    def thread_id(self) -> str:
+        return self.snapshot.thread_id
+
+    @property
+    def turn_id(self) -> str:
+        return self.snapshot.turn_id
+
+
 CodexStreamEvent = (
     TurnStartedEvent
     | ItemStartedEvent
     | AgentMessageDeltaEvent
     | ItemCompletedEvent
     | TurnCompletedEvent
+    | TokenUsageUpdatedEvent
 )

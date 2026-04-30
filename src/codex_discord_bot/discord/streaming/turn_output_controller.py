@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import time
 
 import discord
 
@@ -10,12 +11,15 @@ from codex_discord_bot.codex.stream_events import AgentMessageDeltaEvent
 from codex_discord_bot.codex.stream_events import CodexStreamEvent
 from codex_discord_bot.codex.stream_events import ItemCompletedEvent
 from codex_discord_bot.codex.stream_events import ItemStartedEvent
+from codex_discord_bot.codex.stream_events import TokenUsageUpdatedEvent
 from codex_discord_bot.codex.media_directives import parse_media_directives_from_text
 from codex_discord_bot.codex.stream_renderer import AssistantMessageSnapshot
 from codex_discord_bot.codex.stream_renderer import OutputImageArtifact
 from codex_discord_bot.codex.stream_renderer import output_images_from_items
+from codex_discord_bot.codex.token_usage import TokenUsageSnapshot
 from codex_discord_bot.codex.worker import TurnRunResult
 from codex_discord_bot.config import Settings
+from codex_discord_bot.discord.context_usage import format_context_usage_summary_lines
 from codex_discord_bot.discord.streaming.chunker import chunk_discord_text
 from codex_discord_bot.discord.streaming.delivery import DiscordDeliveryError
 from codex_discord_bot.discord.streaming.delivery import suppress_discord_delivery_error
@@ -82,6 +86,11 @@ class TurnOutputController:
         self._persisted_preview_ids: list[str] = []
         self._persisted_state: TurnOutputState | None = None
         self._delivery_error_text: str | None = None
+        self._control_status_text = control_message.content or "Codex 正在处理..."
+        self._last_control_content = control_message.content
+        self._latest_token_usage: TokenUsageSnapshot | None = None
+        self._last_rendered_usage_percent: int | None = None
+        self._last_usage_rendered_at = 0.0
 
     def _build_preview_stream(self) -> DiscordDraftStream | None:
         if self.settings.discord_preview_mode == "off":
@@ -129,6 +138,9 @@ class TurnOutputController:
                 return
             if isinstance(event, ItemCompletedEvent):
                 await self._handle_item_completed(event)
+                return
+            if isinstance(event, TokenUsageUpdatedEvent):
+                await self._handle_token_usage_updated(event)
         except DiscordDeliveryError as exc:
             await self._record_delivery_failure(str(exc))
 
@@ -325,6 +337,16 @@ class TurnOutputController:
             return
         await self._send_image_artifact_if_needed(artifact)
 
+    async def _handle_token_usage_updated(self, event: TokenUsageUpdatedEvent) -> None:
+        self._latest_token_usage = event.snapshot
+        if self.turn_id is not None:
+            await self.turn_output_service.set_token_usage(
+                codex_turn_id=self.turn_id,
+                token_usage=event.snapshot.to_dict(),
+            )
+        if self._should_render_usage_update(event.snapshot):
+            await self._render_control_message(force=False)
+
     async def _sync_preview_ids(self, preview_stream: DiscordDraftStream | None) -> None:
         if self.turn_id is None:
             return
@@ -350,10 +372,43 @@ class TurnOutputController:
         self._persisted_state = state
 
     async def _edit_control_message(self, content: str) -> None:
+        self._control_status_text = content
+        await self._render_control_message(force=True)
+
+    async def _render_control_message(self, *, force: bool) -> None:
+        content = self._build_control_message_content(self._control_status_text)
+        if content == self._last_control_content:
+            return
+        if not force and not self._should_render_usage_update(self._latest_token_usage):
+            return
         await suppress_discord_delivery_error(
             lambda: self.control_message.edit(content=content),
             operation_name="discord.control_message.edit",
         )
+        self._last_control_content = content
+        self._last_usage_rendered_at = time.monotonic()
+        self._last_rendered_usage_percent = self._usage_percent_bucket(self._latest_token_usage)
+
+    def _build_control_message_content(self, status_text: str) -> str:
+        usage_lines = format_context_usage_summary_lines(self._latest_token_usage)
+        if not usage_lines:
+            return status_text
+        return "\n".join([status_text, *usage_lines])
+
+    def _should_render_usage_update(self, snapshot: TokenUsageSnapshot | None) -> bool:
+        if snapshot is None:
+            return False
+        current_percent = self._usage_percent_bucket(snapshot)
+        if self._last_rendered_usage_percent is None:
+            return True
+        if current_percent is not None and abs(current_percent - self._last_rendered_usage_percent) >= 1:
+            return True
+        return time.monotonic() - self._last_usage_rendered_at >= 10
+
+    def _usage_percent_bucket(self, snapshot: TokenUsageSnapshot | None) -> int | None:
+        if snapshot is None or snapshot.context_ratio is None:
+            return None
+        return round(snapshot.context_ratio * 100)
 
     def _map_turn_status(self, turn_status: str) -> TurnOutputState:
         if turn_status == "interrupted":

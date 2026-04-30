@@ -15,6 +15,7 @@ from codex_discord_bot.codex.stream_events import AgentMessageDeltaEvent
 from codex_discord_bot.codex.stream_events import CodexStreamEvent
 from codex_discord_bot.codex.stream_events import ItemCompletedEvent
 from codex_discord_bot.codex.stream_events import ItemStartedEvent
+from codex_discord_bot.codex.stream_events import TokenUsageUpdatedEvent
 from codex_discord_bot.codex.stream_events import TurnCompletedEvent
 from codex_discord_bot.codex.stream_events import TurnStartedEvent
 from codex_discord_bot.codex.stream_renderer import AssistantMessageSnapshot
@@ -22,6 +23,7 @@ from codex_discord_bot.codex.stream_renderer import OutputImageArtifact
 from codex_discord_bot.codex.stream_renderer import assistant_messages_from_items
 from codex_discord_bot.codex.stream_renderer import assistant_text_from_items
 from codex_discord_bot.codex.stream_renderer import output_images_from_items
+from codex_discord_bot.codex.token_usage import TokenUsageSnapshot
 from codex_discord_bot.config import Settings
 from codex_discord_bot.persistence.models import DiscordSession
 from codex_discord_bot.persistence.models import Workspace
@@ -353,6 +355,15 @@ class CodexWorker:
                     item_event = self._build_item_event(payload, event_type="completed")
                     if item_event is not None:
                         self._emit_stream_event(callbacks, item_event)
+                    continue
+
+                if notification.method == "thread/tokenUsage/updated" and payload.get("turnId") == turn_id:
+                    usage_snapshot = TokenUsageSnapshot.from_payload(payload)
+                    if usage_snapshot is not None:
+                        self._emit_stream_event(
+                            callbacks,
+                            TokenUsageUpdatedEvent(snapshot=usage_snapshot),
+                        )
                     continue
 
                 if (

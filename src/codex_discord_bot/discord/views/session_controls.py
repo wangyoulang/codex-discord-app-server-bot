@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import discord
 
+from codex_discord_bot.discord.context_usage import format_context_usage_detail_lines
 from codex_discord_bot.discord.handlers.interactions import send_interaction_error
 from codex_discord_bot.persistence.enums import SessionStatus
 
@@ -39,6 +40,9 @@ class SessionControlView(discord.ui.View):
         codex_thread = None
         if session.codex_thread_id is not None:
             codex_thread = await self.app_state.codex_thread_service.get_by_codex_thread_id(session.codex_thread_id)
+        latest_output = await self.app_state.turn_output_service.get_latest_for_thread(
+            str(interaction.channel.id)
+        )
         await interaction.response.send_message(
             "\n".join(
                 [
@@ -51,6 +55,13 @@ class SessionControlView(discord.ui.View):
                     f"active_turn_id: `{session.active_turn_id or '无'}`",
                     f"live_active_turn_id: `{active_turn.turn_id if active_turn is not None else '无'}`",
                     f"last_bot_message_id: `{session.last_bot_message_id or '无'}`",
+                    f"output_turn_id: `{latest_output.codex_turn_id if latest_output is not None else '无'}`",
+                    f"output_state: `{latest_output.state.value if latest_output is not None else '无'}`",
+                    *format_context_usage_detail_lines(
+                        getattr(latest_output, "token_usage_json", None)
+                        if latest_output is not None
+                        else None
+                    ),
                     f"worker_active: `{worker is not None}`",
                 ]
             ),
