@@ -325,6 +325,92 @@ def test_turn_output_controller_does_not_replay_snapshots_with_different_ids(tmp
     asyncio.run(scenario())
 
 
+def test_turn_output_controller_does_not_replay_final_snapshot_when_commentary_is_missing(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
+        db = Database(database_url)
+        engine = create_async_engine(database_url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+        thread = FakeThread(1485515511394734221)
+        source_message = FakeMessage(thread, 1485523988435173466, "这条问话会重复吗")
+        control_message = FakeMessage(thread, 2000, "正在调用 Codex...")
+        settings = Settings(discord_bot_token="token")
+        controller = TurnOutputController(
+            settings=settings,
+            turn_output_service=TurnOutputService(db),
+            source_message=source_message,  # type: ignore[arg-type]
+            control_message=control_message,  # type: ignore[arg-type]
+        )
+
+        await controller.bind_turn(codex_thread_id="thr_1", turn_id="turn_1")
+
+        for item_id, text in (
+            ("item_commentary", "我先确认现场，再给你结论。"),
+            ("item_final", "这是最终结论，不能被重复投递。"),
+        ):
+            await controller.handle_event(
+                ItemStartedEvent(
+                    thread_id="thr_1",
+                    turn_id="turn_1",
+                    item_id=item_id,
+                    item_type="agentMessage",
+                    item={"id": item_id, "type": "agentMessage", "text": ""},
+                )
+            )
+            await controller.handle_event(
+                AgentMessageDeltaEvent(
+                    thread_id="thr_1",
+                    turn_id="turn_1",
+                    item_id=item_id,
+                    delta=text,
+                )
+            )
+            await controller.handle_event(
+                ItemCompletedEvent(
+                    thread_id="thr_1",
+                    turn_id="turn_1",
+                    item_id=item_id,
+                    item_type="agentMessage",
+                    item={"id": item_id, "type": "agentMessage", "text": text},
+                )
+            )
+
+        result = await controller.finalize(
+            TurnRunResult(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                final_text="这是最终结论，不能被重复投递。",
+                turn_status="completed",
+                assistant_messages=[
+                    AssistantMessageSnapshot(
+                        item_id="message:0",
+                        text="这是最终结论，不能被重复投递。",
+                    ),
+                ],
+            )
+        )
+
+        visible_messages = [message for message in thread.sent_messages if not message.deleted]
+        assert [message.content for message in visible_messages] == [
+            "我先确认现场，再给你结论。",
+            "这是最终结论，不能被重复投递。",
+        ]
+        assert result.message_ids == ["1000", "1001"]
+
+        latest = await TurnOutputService(db).get_by_turn_id("turn_1")
+        assert isinstance(latest, DiscordTurnOutput)
+        assert latest.final_message_ids_json == ["1000", "1001"]
+
+        await db.close()
+
+    asyncio.run(scenario())
+
+
 def test_turn_output_controller_defaults_to_completed_message_blocks_without_preview_edits(
     tmp_path: Path,
 ) -> None:

@@ -39,6 +39,11 @@ logger = get_logger(__name__)
 _REASONING_TAG_RE = re.compile(r"</?(thinking|reasoning)>", re.IGNORECASE)
 
 
+def _normalize_finalized_text(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return "\n".join(line.rstrip() for line in normalized.split("\n"))
+
+
 @dataclass(slots=True)
 class TurnRenderFinalizeResult:
     message_ids: list[str]
@@ -752,12 +757,22 @@ class TurnOutputController:
         prefix_index = 0
         max_prefix = min(len(self._finalized_agent_item_texts), len(snapshots))
         while prefix_index < max_prefix:
-            snapshot_text = snapshots[prefix_index].text.strip()
-            finalized_text = self._finalized_agent_item_texts[prefix_index].strip()
+            snapshot_text = _normalize_finalized_text(snapshots[prefix_index].text)
+            finalized_text = _normalize_finalized_text(self._finalized_agent_item_texts[prefix_index])
             if snapshot_text != finalized_text:
                 break
             prefix_index += 1
-        return snapshots[prefix_index:]
+        pending_snapshots = snapshots[prefix_index:]
+        finalized_texts = {
+            normalized
+            for text in self._finalized_agent_item_texts
+            if (normalized := _normalize_finalized_text(text))
+        }
+        return [
+            snapshot
+            for snapshot in pending_snapshots
+            if _normalize_finalized_text(snapshot.text) not in finalized_texts
+        ]
 
     def _clean_preview_text(self, text: str) -> str:
         cleaned = _REASONING_TAG_RE.sub("", text).strip()
