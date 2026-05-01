@@ -4,6 +4,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from codex_discord_bot.codex.stream_events import AgentMessageDeltaEvent
+from codex_discord_bot.codex.stream_events import ItemStartedEvent
 from codex_discord_bot.codex.stream_events import TurnStartedEvent
 from codex_discord_bot.discord.handlers import thread_messages
 from codex_discord_bot.persistence.enums import SessionStatus
@@ -492,6 +494,9 @@ def test_initialized_thread_marks_error_and_resets_worker_when_turn_times_out() 
             fail_errors.append(error)
             return SimpleNamespace(last_message_id="999")
 
+        async def mark_long_running(self, **_kwargs) -> None:
+            return None
+
     async def scenario() -> None:
         worker = SlowWorker()
         worker_pool = FakeWorkerPool(worker)
@@ -515,7 +520,11 @@ def test_initialized_thread_marks_error_and_resets_worker_when_turn_times_out() 
                 codex_thread_service=FakeCodexThreadService(),
                 session_service=session_service,
                 artifact_service=SimpleNamespace(artifact_root="/tmp"),
-                settings=SimpleNamespace(codex_turn_timeout_seconds=0.01),
+                settings=SimpleNamespace(
+                    codex_turn_stall_timeout_seconds=0.01,
+                    codex_turn_command_stall_timeout_seconds=0.01,
+                    codex_turn_soft_warn_seconds=0,
+                ),
                 turn_output_service=SimpleNamespace(),
                 approval_service=SimpleNamespace(),
             )
@@ -544,9 +553,117 @@ def test_initialized_thread_marks_error_and_resets_worker_when_turn_times_out() 
                 "last_bot_message_id": "999",
             }
         ]
-        assert any("Codex 执行超过 0.01 秒仍未结束" in error for error in fail_errors)
+        assert any("Codex 已连续 0.01 秒没有进展事件" in error for error in fail_errors)
         assert audit_service.records[-1]["action"] == "thread_message_turn_timeout"
+        assert audit_service.records[-1]["payload"]["timeout_type"] == "stall"
         assert audit_service.records[-1]["payload"]["timeout_seconds"] == 0.01
+
+    asyncio.run(scenario())
+
+
+def test_run_codex_turn_timeout_allows_long_turn_when_progress_continues() -> None:
+    class ProgressWorker:
+        async def run_streamed_turn(
+            self,
+            _session,
+            _workspace,
+            _input_items,
+            *,
+            on_event,
+            on_approval_request,
+        ):
+            del on_approval_request
+            await on_event(TurnStartedEvent(thread_id="thr_1", turn_id="turn_1"))
+            for _index in range(5):
+                await asyncio.sleep(0.01)
+                await on_event(
+                    AgentMessageDeltaEvent(
+                        thread_id="thr_1",
+                        turn_id="turn_1",
+                        item_id="msg_1",
+                        delta="进展",
+                    )
+                )
+            return SimpleNamespace(thread_id="thr_1", turn_id="turn_1")
+
+    async def scenario() -> None:
+        events: list[object] = []
+
+        async def on_event(event) -> None:
+            events.append(event)
+
+        async def on_approval_request(_envelope) -> dict:
+            return {"decision": "decline"}
+
+        result = await thread_messages._run_codex_turn_with_timeout(
+            ProgressWorker(),
+            SimpleNamespace(),
+            SimpleNamespace(),
+            [{"type": "text", "text": "大任务"}],
+            on_event=on_event,
+            on_approval_request=on_approval_request,
+            timeout_policy=thread_messages.CodexTurnTimeoutPolicy(
+                hard_timeout_seconds=0,
+                stall_timeout_seconds=0.025,
+                command_stall_timeout_seconds=0.025,
+                soft_warn_seconds=0,
+            ),
+        )
+
+        assert result.turn_id == "turn_1"
+        assert len(events) == 6
+
+    asyncio.run(scenario())
+
+
+def test_run_codex_turn_timeout_uses_command_stall_timeout_for_running_command() -> None:
+    class CommandWorker:
+        async def run_streamed_turn(
+            self,
+            _session,
+            _workspace,
+            _input_items,
+            *,
+            on_event,
+            on_approval_request,
+        ):
+            del on_approval_request
+            await on_event(TurnStartedEvent(thread_id="thr_1", turn_id="turn_1"))
+            await on_event(
+                ItemStartedEvent(
+                    thread_id="thr_1",
+                    turn_id="turn_1",
+                    item_id="cmd_1",
+                    item_type="commandExecution",
+                    item={"id": "cmd_1", "type": "commandExecution"},
+                )
+            )
+            await asyncio.sleep(0.04)
+            return SimpleNamespace(thread_id="thr_1", turn_id="turn_1")
+
+    async def scenario() -> None:
+        async def on_event(_event) -> None:
+            return None
+
+        async def on_approval_request(_envelope) -> dict:
+            return {"decision": "decline"}
+
+        result = await thread_messages._run_codex_turn_with_timeout(
+            CommandWorker(),
+            SimpleNamespace(),
+            SimpleNamespace(),
+            [{"type": "text", "text": "跑回测"}],
+            on_event=on_event,
+            on_approval_request=on_approval_request,
+            timeout_policy=thread_messages.CodexTurnTimeoutPolicy(
+                hard_timeout_seconds=0,
+                stall_timeout_seconds=0.01,
+                command_stall_timeout_seconds=0.1,
+                soft_warn_seconds=0,
+            ),
+        )
+
+        assert result.turn_id == "turn_1"
 
     asyncio.run(scenario())
 

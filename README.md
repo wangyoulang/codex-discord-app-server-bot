@@ -34,6 +34,10 @@ DISCORD_APPLICATION_ID=
 - `DISCORD_GUILD_ID`：只向指定服务器同步命令时使用
 - `CODEX_HOME`：让 bot 使用指定的 Codex 配置目录
 - `DATABASE_URL`：修改数据库位置
+- `CODEX_TURN_HARD_TIMEOUT_SECONDS`：Codex turn 总时长硬上限，`0` 表示不按总时长强制中断
+- `CODEX_TURN_STALL_TIMEOUT_SECONDS`：普通阶段连续多久没有 Codex 进展事件后判定卡住
+- `CODEX_TURN_COMMAND_STALL_TIMEOUT_SECONDS`：命令执行阶段连续多久没有进展事件后判定卡住
+- `CODEX_TURN_SOFT_WARN_SECONDS`：运行多久后只提示长任务仍在处理，不中断
 
 完整示例见 `.env.example`。
 

@@ -36,7 +36,12 @@ class Settings(BaseSettings):
     codex_https_proxy: str | None = None
     codex_all_proxy: str | None = None
     codex_no_proxy: str | None = None
+    # 旧配置保留兼容，但不再作为总时长硬中断依据。
     codex_turn_timeout_seconds: int = 1800
+    codex_turn_hard_timeout_seconds: int = 0
+    codex_turn_stall_timeout_seconds: int = 1800
+    codex_turn_command_stall_timeout_seconds: int = 7200
+    codex_turn_soft_warn_seconds: int = 1800
     worker_idle_timeout_seconds: int = 900
 
     discord_preview_mode: Literal["off", "partial", "block"] = "off"

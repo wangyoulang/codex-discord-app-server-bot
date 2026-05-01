@@ -237,6 +237,26 @@ class TurnOutputController:
             state=TurnOutputState.delivery_failed,
         )
 
+    async def mark_long_running(
+        self,
+        *,
+        elapsed_seconds: float,
+        idle_seconds: float,
+        active_item_type: str | None,
+    ) -> None:
+        item_label = {
+            "reasoning": "思考",
+            "commandExecution": "执行命令",
+            "fileChange": "生成文件修改",
+            "mcpToolCall": "调用工具",
+            "agentMessage": "输出回复",
+        }.get(active_item_type, "处理")
+        await self._edit_control_message(
+            f"Codex 已运行约 {elapsed_seconds:.0f} 秒，当前仍在{item_label}。"
+            f"最近 {idle_seconds:.0f} 秒内仍有进展检测，长任务会继续等待；"
+            "如需停止，请点击“打断”。"
+        )
+
     async def _handle_item_started(self, event: ItemStartedEvent) -> None:
         if event.item_type == "agentMessage":
             if self._active_agent_item is not None:

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import discord
 
 from codex_discord_bot.codex.approvals import ApprovalEnvelope
+from codex_discord_bot.codex.stream_events import ItemCompletedEvent
+from codex_discord_bot.codex.stream_events import ItemStartedEvent
 from codex_discord_bot.codex.stream_events import TurnStartedEvent
 from codex_discord_bot.discord.handlers.attachments import build_message_input_items
 from codex_discord_bot.discord.handlers.attachments import collect_supported_attachments
@@ -19,13 +22,40 @@ from codex_discord_bot.persistence.enums import SessionStatus
 logger = get_logger(__name__)
 
 
+@dataclass(slots=True)
+class CodexTurnTimeoutPolicy:
+    hard_timeout_seconds: float = 0
+    stall_timeout_seconds: float = 1800
+    command_stall_timeout_seconds: float = 7200
+    soft_warn_seconds: float = 1800
+
+
 class CodexTurnTimeoutError(TimeoutError):
-    def __init__(self, timeout_seconds: int) -> None:
+    def __init__(
+        self,
+        *,
+        timeout_type: str,
+        timeout_seconds: float,
+        elapsed_seconds: float,
+        idle_seconds: float,
+        active_item_type: str | None,
+    ) -> None:
+        self.timeout_type = timeout_type
         self.timeout_seconds = timeout_seconds
-        super().__init__(
-            f"Codex 执行超过 {timeout_seconds} 秒仍未结束，已重置当前 worker。"
-            "可能原因是上下文过大、app-server 卡住或未返回终止事件。"
-        )
+        self.elapsed_seconds = elapsed_seconds
+        self.idle_seconds = idle_seconds
+        self.active_item_type = active_item_type
+        if timeout_type == "hard":
+            message = (
+                f"Codex 执行超过硬上限 {timeout_seconds:g} 秒仍未结束，已重置当前 worker。"
+                "可能原因是任务过大、命令执行过久或 app-server 未返回终止事件。"
+            )
+        else:
+            message = (
+                f"Codex 已连续 {timeout_seconds:g} 秒没有进展事件，已重置当前 worker。"
+                "可能原因是 app-server 卡住、网络请求无响应或长命令无输出。"
+            )
+        super().__init__(message)
 
 
 if TYPE_CHECKING:
@@ -45,6 +75,44 @@ def _is_missing_thread_error(exc: Exception) -> bool:
     return "thread not loaded:" in message or "no rollout found for thread id" in message
 
 
+def _timeout_value(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _build_turn_timeout_policy(settings: object) -> CodexTurnTimeoutPolicy:
+    legacy_stall_timeout = _timeout_value(
+        getattr(settings, "codex_turn_timeout_seconds", 1800),
+        1800,
+    )
+    return CodexTurnTimeoutPolicy(
+        hard_timeout_seconds=_timeout_value(
+            getattr(settings, "codex_turn_hard_timeout_seconds", 0),
+            0,
+        ),
+        stall_timeout_seconds=_timeout_value(
+            getattr(settings, "codex_turn_stall_timeout_seconds", legacy_stall_timeout),
+            legacy_stall_timeout,
+        ),
+        command_stall_timeout_seconds=_timeout_value(
+            getattr(settings, "codex_turn_command_stall_timeout_seconds", 7200),
+            7200,
+        ),
+        soft_warn_seconds=_timeout_value(
+            getattr(settings, "codex_turn_soft_warn_seconds", 1800),
+            1800,
+        ),
+    )
+
+
+def _active_stall_timeout(policy: CodexTurnTimeoutPolicy, active_item_type: str | None) -> float:
+    if active_item_type == "commandExecution" and policy.command_stall_timeout_seconds > 0:
+        return policy.command_stall_timeout_seconds
+    return policy.stall_timeout_seconds
+
+
 async def _run_codex_turn_with_timeout(
     worker: object,
     session: object,
@@ -53,10 +121,16 @@ async def _run_codex_turn_with_timeout(
     *,
     on_event: object,
     on_approval_request: object,
-    timeout_seconds: int,
+    timeout_policy: CodexTurnTimeoutPolicy,
+    on_long_running: object | None = None,
 ) -> object:
     run_streamed_turn = getattr(worker, "run_streamed_turn")
-    if timeout_seconds <= 0:
+    if (
+        timeout_policy.hard_timeout_seconds <= 0
+        and timeout_policy.stall_timeout_seconds <= 0
+        and timeout_policy.command_stall_timeout_seconds <= 0
+        and timeout_policy.soft_warn_seconds <= 0
+    ):
         return await run_streamed_turn(
             session,
             workspace,
@@ -65,21 +139,91 @@ async def _run_codex_turn_with_timeout(
             on_approval_request=on_approval_request,
         )
 
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+    last_progress_at = started_at
+    active_item_id: str | None = None
+    active_item_type: str | None = None
+    soft_warned = False
+
+    async def progress_on_event(event) -> None:
+        nonlocal active_item_id, active_item_type, last_progress_at
+        last_progress_at = loop.time()
+        if isinstance(event, ItemStartedEvent):
+            active_item_id = event.item_id
+            active_item_type = event.item_type
+        elif isinstance(event, ItemCompletedEvent) and event.item_id == active_item_id:
+            active_item_id = None
+            active_item_type = None
+        await on_event(event)
+
     task = asyncio.create_task(
         run_streamed_turn(
             session,
             workspace,
             input_items,
-            on_event=on_event,
+            on_event=progress_on_event,
             on_approval_request=on_approval_request,
         )
     )
-    done, _pending = await asyncio.wait({task}, timeout=timeout_seconds)
-    if task in done:
-        return await task
+    while True:
+        now = loop.time()
+        deadlines: list[float] = []
+        if timeout_policy.hard_timeout_seconds > 0:
+            deadlines.append(started_at + timeout_policy.hard_timeout_seconds)
+        stall_timeout = _active_stall_timeout(timeout_policy, active_item_type)
+        if stall_timeout > 0:
+            deadlines.append(last_progress_at + stall_timeout)
+        if timeout_policy.soft_warn_seconds > 0 and not soft_warned:
+            deadlines.append(started_at + timeout_policy.soft_warn_seconds)
 
-    task.cancel()
-    raise CodexTurnTimeoutError(timeout_seconds)
+        wait_seconds = 1.0
+        if deadlines:
+            wait_seconds = max(0, min(deadlines) - now)
+
+        done, _pending = await asyncio.wait({task}, timeout=wait_seconds)
+        if task in done:
+            return await task
+
+        now = loop.time()
+        elapsed_seconds = now - started_at
+        idle_seconds = now - last_progress_at
+        if (
+            timeout_policy.hard_timeout_seconds > 0
+            and elapsed_seconds >= timeout_policy.hard_timeout_seconds
+        ):
+            task.cancel()
+            raise CodexTurnTimeoutError(
+                timeout_type="hard",
+                timeout_seconds=timeout_policy.hard_timeout_seconds,
+                elapsed_seconds=elapsed_seconds,
+                idle_seconds=idle_seconds,
+                active_item_type=active_item_type,
+            )
+
+        stall_timeout = _active_stall_timeout(timeout_policy, active_item_type)
+        if stall_timeout > 0 and idle_seconds >= stall_timeout:
+            task.cancel()
+            raise CodexTurnTimeoutError(
+                timeout_type="stall",
+                timeout_seconds=stall_timeout,
+                elapsed_seconds=elapsed_seconds,
+                idle_seconds=idle_seconds,
+                active_item_type=active_item_type,
+            )
+
+        if (
+            timeout_policy.soft_warn_seconds > 0
+            and not soft_warned
+            and elapsed_seconds >= timeout_policy.soft_warn_seconds
+        ):
+            soft_warned = True
+            if on_long_running is not None:
+                await on_long_running(
+                    elapsed_seconds=elapsed_seconds,
+                    idle_seconds=idle_seconds,
+                    active_item_type=active_item_type,
+                )
 
 
 async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message) -> None:
@@ -309,6 +453,18 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
         finally:
             await bot.app_state.approval_service.cleanup_request(pending.local_request_id)
 
+    async def on_long_running(
+        *,
+        elapsed_seconds: float,
+        idle_seconds: float,
+        active_item_type: str | None,
+    ) -> None:
+        await controller.mark_long_running(
+            elapsed_seconds=elapsed_seconds,
+            idle_seconds=idle_seconds,
+            active_item_type=active_item_type,
+        )
+
     await bot.app_state.audit_service.record(
         action="thread_message_received",
         guild_id=str(message.guild.id),
@@ -321,7 +477,7 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
         discord_thread_id=str(message.channel.id),
         last_bot_message_id=str(control_message.id),
     )
-    turn_timeout_seconds = getattr(bot.app_state.settings, "codex_turn_timeout_seconds", 1800)
+    turn_timeout_policy = _build_turn_timeout_policy(bot.app_state.settings)
 
     try:
         async with bot.app_state.worker_pool.lease(worker_key) as worker:
@@ -333,7 +489,8 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
                     input_items,
                     on_event=on_event,
                     on_approval_request=on_approval_request,
-                    timeout_seconds=turn_timeout_seconds,
+                    timeout_policy=turn_timeout_policy,
+                    on_long_running=on_long_running,
                 )
             except Exception as exc:
                 if not route.session.codex_thread_id or not _is_missing_thread_error(exc):
@@ -372,7 +529,8 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
                     input_items,
                     on_event=on_event,
                     on_approval_request=on_approval_request,
-                    timeout_seconds=turn_timeout_seconds,
+                    timeout_policy=turn_timeout_policy,
+                    on_long_running=on_long_running,
                 )
             thread_payload = await worker.read_thread(result.thread_id, include_turns=False)
 
@@ -400,7 +558,11 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
     except CodexTurnTimeoutError as exc:
         logger.warning(
             "thread.message.turn_timeout",
+            timeout_type=exc.timeout_type,
             timeout_seconds=exc.timeout_seconds,
+            elapsed_seconds=round(exc.elapsed_seconds, 3),
+            idle_seconds=round(exc.idle_seconds, 3),
+            active_item_type=exc.active_item_type,
             thread_id=message.channel.id,
             codex_thread_id=route.session.codex_thread_id,
             turn_id=getattr(controller, "turn_id", None),
@@ -415,7 +577,11 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
                 **audit_payload,
                 "codex_thread_id": route.session.codex_thread_id,
                 "turn_id": getattr(controller, "turn_id", None),
+                "timeout_type": exc.timeout_type,
                 "timeout_seconds": exc.timeout_seconds,
+                "elapsed_seconds": round(exc.elapsed_seconds, 3),
+                "idle_seconds": round(exc.idle_seconds, 3),
+                "active_item_type": exc.active_item_type,
             },
         )
         render_result = await controller.fail(str(exc))
