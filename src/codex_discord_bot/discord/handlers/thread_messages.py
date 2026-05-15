@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from codex_discord_bot.codex.errors import is_model_at_capacity_error
 from codex_discord_bot.codex.approvals import ApprovalEnvelope
 from codex_discord_bot.codex.stream_events import ItemCompletedEvent
 from codex_discord_bot.codex.stream_events import ItemStartedEvent
@@ -534,6 +535,21 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
                 )
             thread_payload = await worker.read_thread(result.thread_id, include_turns=False)
 
+        if is_model_at_capacity_error(getattr(result, "error_message", "") or ""):
+            await bot.app_state.audit_service.record(
+                action="codex_model_at_capacity",
+                guild_id=str(message.guild.id),
+                discord_thread_id=str(message.channel.id),
+                actor_id=str(message.author.id),
+                payload={
+                    **audit_payload,
+                    "codex_thread_id": getattr(result, "thread_id", None),
+                    "turn_id": getattr(result, "turn_id", None),
+                    "error_message": getattr(result, "error_message", None),
+                    "model_override": getattr(route.session, "model_override", None),
+                },
+            )
+
         render_result = await controller.finalize(result)
         await bot.app_state.codex_thread_service.sync_thread_from_payload(
             workspace_id=route.workspace.id,
@@ -598,6 +614,20 @@ async def handle_thread_message(bot: "CodexDiscordBot", message: discord.Message
         )
     except Exception as exc:
         logger.exception("thread.message.failed", error=str(exc), thread_id=message.channel.id)
+        if is_model_at_capacity_error(str(exc)):
+            await bot.app_state.audit_service.record(
+                action="codex_model_at_capacity",
+                guild_id=str(message.guild.id),
+                discord_thread_id=str(message.channel.id),
+                actor_id=str(message.author.id),
+                payload={
+                    **audit_payload,
+                    "codex_thread_id": route.session.codex_thread_id,
+                    "turn_id": getattr(controller, "turn_id", None),
+                    "error_message": str(exc),
+                    "model_override": getattr(route.session, "model_override", None),
+                },
+            )
         render_result = await controller.fail(str(exc))
         await bot.app_state.session_service.mark_error(
             discord_thread_id=str(message.channel.id),

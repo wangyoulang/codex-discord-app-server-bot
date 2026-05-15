@@ -173,6 +173,50 @@ def test_turn_output_controller_keeps_progress_messages_separate_and_only_replie
     asyncio.run(scenario())
 
 
+def test_turn_output_controller_shows_capacity_hint_when_turn_failed(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
+        db = Database(database_url)
+        engine = create_async_engine(database_url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+        thread = FakeThread(1485470675786399764)
+        source_message = FakeMessage(thread, 1485515772351746099, "请继续")
+        control_message = FakeMessage(thread, 2000, "正在调用 Codex...")
+        settings = Settings(discord_bot_token="token")
+        controller = TurnOutputController(
+            settings=settings,
+            turn_output_service=TurnOutputService(db),
+            source_message=source_message,  # type: ignore[arg-type]
+            control_message=control_message,  # type: ignore[arg-type]
+        )
+
+        await controller.bind_turn(codex_thread_id="thr_1", turn_id="turn_1")
+
+        capacity_error = "Selected model is at capacity. Please try a different model."
+        result = await controller.finalize(
+            TurnRunResult(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                final_text="",
+                turn_status="failed",
+                error_message=capacity_error,
+                assistant_messages=[],
+            )
+        )
+
+        assert result.state.value == "failed"
+        assert "模型容量已满" in (control_message.content or "")
+        assert "/codex model set" in (control_message.content or "")
+        assert "Selected model is at capacity" in (control_message.content or "")
+
+        await db.close()
+
+    asyncio.run(scenario())
+
+
 def test_turn_output_controller_renders_and_persists_context_usage(tmp_path: Path) -> None:
     async def scenario() -> None:
         database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"

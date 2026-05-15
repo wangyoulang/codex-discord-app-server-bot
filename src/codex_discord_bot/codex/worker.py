@@ -302,7 +302,10 @@ class CodexWorker:
             thread_id = self._ensure_thread_sync(session, workspace)
             assert self._client is not None
 
-            params = {"cwd": workspace.cwd}
+            params: dict[str, Any] = {"cwd": workspace.cwd}
+            model_override = getattr(session, "model_override", None)
+            if isinstance(model_override, str) and model_override.strip():
+                params["model"] = model_override.strip()
             started = self._client.turn_start(thread_id, input_items, params=params)
             started_turn = started.get("turn")
             if not isinstance(started_turn, dict):

@@ -54,3 +54,14 @@ class DiscordSessionRepository:
         await self.session.flush()
         await self.session.refresh(record)
         return record
+
+    async def update_model_override(
+        self,
+        record: DiscordSession,
+        *,
+        model_override: str | None,
+    ) -> DiscordSession:
+        record.model_override = model_override
+        await self.session.flush()
+        await self.session.refresh(record)
+        return record

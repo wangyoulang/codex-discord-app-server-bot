@@ -7,6 +7,8 @@ import time
 
 import discord
 
+from codex_discord_bot.codex.errors import build_model_at_capacity_user_message
+from codex_discord_bot.codex.errors import is_model_at_capacity_error
 from codex_discord_bot.codex.stream_events import AgentMessageDeltaEvent
 from codex_discord_bot.codex.stream_events import CodexStreamEvent
 from codex_discord_bot.codex.stream_events import ItemCompletedEvent
@@ -200,7 +202,10 @@ class TurnOutputController:
             final_state = TurnOutputState.delivery_failed
             final_error_text = self._delivery_error_text
         await self._set_state(final_state, error_text=final_error_text)
-        await self._edit_control_message(self._build_control_summary(final_state, len(self._final_message_ids)))
+        status_text = self._build_control_summary(final_state, len(self._final_message_ids))
+        if final_state == TurnOutputState.failed and is_model_at_capacity_error(final_error_text or ""):
+            status_text = build_model_at_capacity_user_message(final_error_text or "")
+        await self._edit_control_message(status_text)
 
         return TurnRenderFinalizeResult(
             message_ids=list(self._final_message_ids),
@@ -216,7 +221,10 @@ class TurnOutputController:
                 codex_turn_id=self.turn_id,
                 active_agent_item_id=None,
             )
-        await self._edit_control_message(f"Codex 执行失败：{error_text}")
+        if is_model_at_capacity_error(error_text):
+            await self._edit_control_message(build_model_at_capacity_user_message(error_text))
+        else:
+            await self._edit_control_message(f"Codex 执行失败：{error_text}")
 
         last_message_id = str(self.control_message.id)
         if self._active_agent_item is not None and self._active_agent_item.preview_stream is not None:

@@ -76,6 +76,7 @@ class DiscordSession(Base):
     workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), nullable=False)
     codex_thread_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     active_turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_override: Mapped[str | None] = mapped_column(String(120), nullable=True)
     status: Mapped[SessionStatus] = mapped_column(
         SqlEnum(SessionStatus, native_enum=False),
         default=SessionStatus.uninitialized,

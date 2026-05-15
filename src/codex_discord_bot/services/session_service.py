@@ -123,3 +123,21 @@ class SessionService:
                 active_turn_id=None,
                 last_bot_message_id=last_bot_message_id,
             )
+
+    async def set_model_override(
+        self,
+        *,
+        discord_thread_id: str,
+        model_override: str | None,
+    ) -> DiscordSession:
+        async with self.db.session() as session:
+            repo = DiscordSessionRepository(session)
+            record = await repo.get_by_discord_thread_id(discord_thread_id)
+            if record is None:
+                raise ValueError("会话不存在，无法设置 model")
+            normalized: str | None = None
+            if isinstance(model_override, str):
+                candidate = model_override.strip()
+                if candidate:
+                    normalized = candidate
+            return await repo.update_model_override(record, model_override=normalized)

@@ -61,6 +61,9 @@ DISCORD_APPLICATION_ID=
 - `/codex session detach`
 - `/codex session archive`
 - `/codex session unarchive`
+- `/codex model status`
+- `/codex model set`
+- `/codex model clear`
 - `/codex admin sync`
 
 ## 注意事项
