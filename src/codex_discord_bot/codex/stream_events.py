@@ -30,6 +30,32 @@ class AgentMessageDeltaEvent:
 
 
 @dataclass(slots=True)
+class ReasoningSummaryTextDeltaEvent:
+    thread_id: str
+    turn_id: str
+    item_id: str
+    summary_index: int
+    delta: str
+
+
+@dataclass(slots=True)
+class ReasoningSummaryPartAddedEvent:
+    thread_id: str
+    turn_id: str
+    item_id: str
+    summary_index: int
+
+
+@dataclass(slots=True)
+class ReasoningTextDeltaEvent:
+    thread_id: str
+    turn_id: str
+    item_id: str
+    content_index: int
+    delta: str
+
+
+@dataclass(slots=True)
 class ItemCompletedEvent:
     thread_id: str
     turn_id: str
@@ -63,6 +89,9 @@ CodexStreamEvent = (
     TurnStartedEvent
     | ItemStartedEvent
     | AgentMessageDeltaEvent
+    | ReasoningSummaryTextDeltaEvent
+    | ReasoningSummaryPartAddedEvent
+    | ReasoningTextDeltaEvent
     | ItemCompletedEvent
     | TurnCompletedEvent
     | TokenUsageUpdatedEvent

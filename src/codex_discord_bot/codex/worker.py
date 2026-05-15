@@ -15,6 +15,9 @@ from codex_discord_bot.codex.stream_events import AgentMessageDeltaEvent
 from codex_discord_bot.codex.stream_events import CodexStreamEvent
 from codex_discord_bot.codex.stream_events import ItemCompletedEvent
 from codex_discord_bot.codex.stream_events import ItemStartedEvent
+from codex_discord_bot.codex.stream_events import ReasoningSummaryPartAddedEvent
+from codex_discord_bot.codex.stream_events import ReasoningSummaryTextDeltaEvent
+from codex_discord_bot.codex.stream_events import ReasoningTextDeltaEvent
 from codex_discord_bot.codex.stream_events import TokenUsageUpdatedEvent
 from codex_discord_bot.codex.stream_events import TurnCompletedEvent
 from codex_discord_bot.codex.stream_events import TurnStartedEvent
@@ -349,6 +352,64 @@ class CodexWorker:
                                 thread_id=thread_id,
                                 turn_id=turn_id,
                                 item_id=str(item_id or ""),
+                                delta=delta,
+                            ),
+                        )
+                    continue
+
+                if (
+                    notification.method == "item/reasoning/summaryTextDelta"
+                    and payload.get("turnId") == turn_id
+                ):
+                    delta = payload.get("delta")
+                    item_id = payload.get("itemId")
+                    summary_index = payload.get("summaryIndex")
+                    if isinstance(delta, str) and delta and isinstance(summary_index, int):
+                        self._emit_stream_event(
+                            callbacks,
+                            ReasoningSummaryTextDeltaEvent(
+                                thread_id=thread_id,
+                                turn_id=turn_id,
+                                item_id=str(item_id or ""),
+                                summary_index=summary_index,
+                                delta=delta,
+                            ),
+                        )
+                    continue
+
+                if (
+                    notification.method == "item/reasoning/summaryPartAdded"
+                    and payload.get("turnId") == turn_id
+                ):
+                    item_id = payload.get("itemId")
+                    summary_index = payload.get("summaryIndex")
+                    if isinstance(summary_index, int):
+                        self._emit_stream_event(
+                            callbacks,
+                            ReasoningSummaryPartAddedEvent(
+                                thread_id=thread_id,
+                                turn_id=turn_id,
+                                item_id=str(item_id or ""),
+                                summary_index=summary_index,
+                            ),
+                        )
+                    continue
+
+                if (
+                    notification.method == "item/reasoning/textDelta"
+                    and payload.get("turnId") == turn_id
+                ):
+                    delta = payload.get("delta")
+                    item_id = payload.get("itemId")
+                    content_index = payload.get("contentIndex")
+                    if isinstance(delta, str) and delta and isinstance(content_index, int):
+                        self._emit_stream_event(
+                            callbacks,
+                            ReasoningTextDeltaEvent(
+                                thread_id=thread_id,
+                                turn_id=turn_id,
+                                item_id=str(item_id or ""),
+                                content_index=content_index,
                                 delta=delta,
                             ),
                         )

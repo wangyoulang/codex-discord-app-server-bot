@@ -9,6 +9,9 @@ import discord
 
 from codex_discord_bot.codex.errors import build_model_at_capacity_user_message
 from codex_discord_bot.codex.errors import is_model_at_capacity_error
+from codex_discord_bot.codex.stream_events import ReasoningSummaryPartAddedEvent
+from codex_discord_bot.codex.stream_events import ReasoningSummaryTextDeltaEvent
+from codex_discord_bot.codex.stream_events import ReasoningTextDeltaEvent
 from codex_discord_bot.codex.stream_events import AgentMessageDeltaEvent
 from codex_discord_bot.codex.stream_events import CodexStreamEvent
 from codex_discord_bot.codex.stream_events import ItemCompletedEvent
@@ -93,6 +96,12 @@ class TurnOutputController:
         self._persisted_preview_ids: list[str] = []
         self._persisted_state: TurnOutputState | None = None
         self._delivery_error_text: str | None = None
+        self._reasoning_stream: DiscordDraftStream | None = None
+        self._reasoning_item_id: str | None = None
+        self._reasoning_summary_text: str = ""
+        self._reasoning_summary_index: int | None = None
+        self._reasoning_last_rendered: str = ""
+        self._reasoning_muted: bool = False
         self._control_status_text = control_message.content or "Codex 正在处理..."
         self._last_control_content = control_message.content
         self._latest_token_usage: TokenUsageSnapshot | None = None
@@ -110,6 +119,51 @@ class TurnOutputController:
             throttle_ms=self.settings.discord_preview_throttle_ms,
             min_initial_chars=self.settings.discord_preview_min_initial_chars,
         )
+
+    def _build_reasoning_stream(self) -> DiscordDraftStream | None:
+        if not hasattr(self.thread, "send"):
+            return None
+        return DiscordDraftStream(
+            channel=self.thread,
+            max_chars=2000,
+            throttle_ms=self.settings.discord_preview_throttle_ms,
+            min_initial_chars=1,
+        )
+
+    def _format_reasoning_message(self, text: str) -> str:
+        header = "Codex 思考（实时，结束后自动删除）：\n"
+        body = text.strip()
+        if not body:
+            return ""
+        max_body_chars = 2000 - len(header)
+        if max_body_chars <= 0:
+            return header[:2000]
+        if len(body) > max_body_chars:
+            body = f"…{body[-(max_body_chars - 1):]}"
+        return f"{header}{body}"
+
+    async def _update_reasoning_message(self) -> None:
+        stream = self._reasoning_stream
+        if stream is None:
+            stream = self._build_reasoning_stream()
+            if stream is None:
+                return
+            self._reasoning_stream = stream
+
+        content = self._format_reasoning_message(self._reasoning_summary_text)
+        if not content or content == self._reasoning_last_rendered:
+            return
+        self._reasoning_last_rendered = content
+        await stream.update(content)
+
+    async def _clear_reasoning_message(self) -> None:
+        if self._reasoning_stream is not None:
+            await self._reasoning_stream.clear()
+        self._reasoning_stream = None
+        self._reasoning_item_id = None
+        self._reasoning_summary_text = ""
+        self._reasoning_summary_index = None
+        self._reasoning_last_rendered = ""
 
     def _build_preview_chunker(self) -> PreviewTextChunker | None:
         if self.settings.discord_preview_mode != "block":
@@ -143,6 +197,15 @@ class TurnOutputController:
             if isinstance(event, AgentMessageDeltaEvent):
                 await self._handle_agent_delta(event)
                 return
+            if isinstance(event, ReasoningSummaryTextDeltaEvent):
+                await self._handle_reasoning_summary_text_delta(event)
+                return
+            if isinstance(event, ReasoningSummaryPartAddedEvent):
+                await self._handle_reasoning_summary_part_added(event)
+                return
+            if isinstance(event, ReasoningTextDeltaEvent):
+                await self._handle_reasoning_text_delta(event)
+                return
             if isinstance(event, ItemCompletedEvent):
                 await self._handle_item_completed(event)
                 return
@@ -155,6 +218,7 @@ class TurnOutputController:
         if self.turn_id is None:
             await self.bind_turn(codex_thread_id=result.thread_id, turn_id=result.turn_id)
 
+        await self._clear_reasoning_message()
         try:
             remaining_image_artifacts = list(result.image_artifacts)
             if self._active_agent_item is not None:
@@ -215,6 +279,7 @@ class TurnOutputController:
 
     async def fail(self, error_text: str) -> TurnRenderFinalizeResult:
         logger.error("discord.turn_output.failed", error=error_text, turn_id=self.turn_id)
+        await self._clear_reasoning_message()
         if self.turn_id is not None:
             await self._set_state(TurnOutputState.failed, error_text=error_text)
             await self.turn_output_service.set_active_agent_item(
@@ -240,6 +305,7 @@ class TurnOutputController:
         )
 
     async def delivery_failed(self, error_text: str) -> TurnRenderFinalizeResult:
+        await self._clear_reasoning_message()
         await self._record_delivery_failure(error_text)
         await self._edit_control_message(f"Codex 已完成，但 Discord 输出投递失败：{error_text}")
         return TurnRenderFinalizeResult(
@@ -272,6 +338,8 @@ class TurnOutputController:
 
     async def _handle_item_started(self, event: ItemStartedEvent) -> None:
         if event.item_type == "agentMessage":
+            await self._clear_reasoning_message()
+            self._reasoning_muted = True
             if self._active_agent_item is not None:
                 await self._finalize_agent_item()
 
@@ -296,6 +364,53 @@ class TurnOutputController:
         }.get(event.item_type)
         if label is not None:
             await self._edit_control_message(label)
+
+    async def _handle_reasoning_summary_text_delta(
+        self,
+        event: ReasoningSummaryTextDeltaEvent,
+    ) -> None:
+        if self._reasoning_muted:
+            return
+        if self._reasoning_item_id is None:
+            self._reasoning_item_id = event.item_id
+        if self._reasoning_item_id != event.item_id:
+            await self._clear_reasoning_message()
+            self._reasoning_item_id = event.item_id
+
+        if self._reasoning_summary_index is None:
+            self._reasoning_summary_index = event.summary_index
+        if self._reasoning_summary_index != event.summary_index:
+            self._reasoning_summary_text = f"{self._reasoning_summary_text.rstrip()}\n\n"
+            self._reasoning_summary_index = event.summary_index
+
+        self._reasoning_summary_text = f"{self._reasoning_summary_text}{event.delta}"
+        await self._update_reasoning_message()
+
+    async def _handle_reasoning_summary_part_added(
+        self,
+        event: ReasoningSummaryPartAddedEvent,
+    ) -> None:
+        if self._reasoning_muted:
+            return
+        if self._reasoning_item_id is None:
+            self._reasoning_item_id = event.item_id
+        if self._reasoning_item_id != event.item_id:
+            await self._clear_reasoning_message()
+            self._reasoning_item_id = event.item_id
+
+        if self._reasoning_summary_index is None:
+            self._reasoning_summary_index = event.summary_index
+            return
+        if self._reasoning_summary_index != event.summary_index:
+            self._reasoning_summary_text = f"{self._reasoning_summary_text.rstrip()}\n\n"
+            self._reasoning_summary_index = event.summary_index
+
+    async def _handle_reasoning_text_delta(
+        self,
+        _event: ReasoningTextDeltaEvent,
+    ) -> None:
+        # 原始思考（raw CoT）默认不展示；如果需要，可改为仅展示 summary 或接入单独开关。
+        return
 
     async def _handle_agent_delta(self, event: AgentMessageDeltaEvent) -> None:
         if self._active_agent_item is None or self._active_agent_item.item_id != event.item_id:

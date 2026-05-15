@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from codex_discord_bot.codex.stream_events import AgentMessageDeltaEvent
 from codex_discord_bot.codex.stream_events import ItemCompletedEvent
 from codex_discord_bot.codex.stream_events import ItemStartedEvent
+from codex_discord_bot.codex.stream_events import ReasoningSummaryTextDeltaEvent
 from codex_discord_bot.codex.stream_events import TokenUsageUpdatedEvent
 from codex_discord_bot.codex.stream_renderer import AssistantMessageSnapshot
 from codex_discord_bot.codex.stream_renderer import OutputImageArtifact
@@ -168,6 +169,70 @@ def test_turn_output_controller_keeps_progress_messages_separate_and_only_replie
         assert result.message_ids == ["1000", "1001"]
         assert control_message.content == "Codex 已完成，共发送 2 条输出消息。"
 
+        await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_turn_output_controller_streams_reasoning_and_clears_on_finalize(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
+        db = Database(database_url)
+        engine = create_async_engine(database_url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+        thread = FakeThread(1485470675786399764)
+        source_message = FakeMessage(thread, 1485515772351746099, "请继续")
+        control_message = FakeMessage(thread, 2000, "正在调用 Codex...")
+        settings = Settings(discord_bot_token="token")
+        controller = TurnOutputController(
+            settings=settings,
+            turn_output_service=TurnOutputService(db),
+            source_message=source_message,  # type: ignore[arg-type]
+            control_message=control_message,  # type: ignore[arg-type]
+        )
+
+        await controller.bind_turn(codex_thread_id="thr_1", turn_id="turn_1")
+        await controller.handle_event(
+            ReasoningSummaryTextDeltaEvent(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                item_id="reasoning_1",
+                summary_index=0,
+                delta="第一段思考。",
+            )
+        )
+        await controller.handle_event(
+            ReasoningSummaryTextDeltaEvent(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                item_id="reasoning_1",
+                summary_index=0,
+                delta="继续补充。",
+            )
+        )
+        assert controller._reasoning_stream is not None
+        await controller._reasoning_stream.flush()
+
+        assert len(thread.sent_messages) == 1
+        reasoning_message = thread.sent_messages[0]
+        assert reasoning_message.deleted is False
+        assert "Codex 思考" in (reasoning_message.content or "")
+        assert "第一段思考。继续补充。" in (reasoning_message.content or "")
+
+        await controller.finalize(
+            TurnRunResult(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                final_text="",
+                turn_status="completed",
+                assistant_messages=[],
+            )
+        )
+
+        assert reasoning_message.deleted is True
         await db.close()
 
     asyncio.run(scenario())
