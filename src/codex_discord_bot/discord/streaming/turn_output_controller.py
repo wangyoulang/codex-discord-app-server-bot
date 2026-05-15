@@ -217,8 +217,6 @@ class TurnOutputController:
     async def finalize(self, result: TurnRunResult) -> TurnRenderFinalizeResult:
         if self.turn_id is None:
             await self.bind_turn(codex_thread_id=result.thread_id, turn_id=result.turn_id)
-
-        await self._clear_reasoning_message()
         try:
             remaining_image_artifacts = list(result.image_artifacts)
             if self._active_agent_item is not None:
@@ -259,6 +257,8 @@ class TurnOutputController:
                 await self._send_image_artifact_if_needed(artifact)
         except DiscordDeliveryError as exc:
             await self._record_delivery_failure(str(exc))
+        finally:
+            await self._clear_reasoning_message()
 
         final_state = self._map_turn_status(result.turn_status)
         final_error_text = result.error_message
@@ -338,7 +338,8 @@ class TurnOutputController:
 
     async def _handle_item_started(self, event: ItemStartedEvent) -> None:
         if event.item_type == "agentMessage":
-            await self._clear_reasoning_message()
+            if self._reasoning_stream is not None:
+                await self._reasoning_stream.flush()
             self._reasoning_muted = True
             if self._active_agent_item is not None:
                 await self._finalize_agent_item()
@@ -461,6 +462,9 @@ class TurnOutputController:
         await self._sync_preview_ids(preview_stream)
 
     async def _handle_item_completed(self, event: ItemCompletedEvent) -> None:
+        if event.item_type == "reasoning":
+            await self._handle_reasoning_completed(event)
+            return
         if event.item_type == "agentMessage":
             if self._active_agent_item is None or self._active_agent_item.item_id != event.item_id:
                 return
@@ -484,6 +488,32 @@ class TurnOutputController:
         if artifact is None:
             return
         await self._send_image_artifact_if_needed(artifact)
+
+    async def _handle_reasoning_completed(self, event: ItemCompletedEvent) -> None:
+        summary_text = self._extract_reasoning_summary_text(event.item)
+        if summary_text is None:
+            return
+
+        if self._reasoning_item_id is None:
+            self._reasoning_item_id = event.item_id
+        if self._reasoning_item_id != event.item_id:
+            await self._clear_reasoning_message()
+            self._reasoning_item_id = event.item_id
+
+        self._reasoning_summary_text = summary_text
+        self._reasoning_summary_index = None
+        await self._update_reasoning_message()
+        if self._reasoning_stream is not None:
+            await self._reasoning_stream.flush()
+
+    def _extract_reasoning_summary_text(self, item: dict) -> str | None:
+        summary = item.get("summary")
+        if not isinstance(summary, list):
+            return None
+        chunks = [chunk.strip() for chunk in summary if isinstance(chunk, str) and chunk.strip()]
+        if not chunks:
+            return None
+        return "\n\n".join(chunks).strip()
 
     async def _handle_token_usage_updated(self, event: TokenUsageUpdatedEvent) -> None:
         self._latest_token_usage = event.snapshot

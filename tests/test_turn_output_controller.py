@@ -238,6 +238,81 @@ def test_turn_output_controller_streams_reasoning_and_clears_on_finalize(tmp_pat
     asyncio.run(scenario())
 
 
+def test_turn_output_controller_flushes_reasoning_summary_on_reasoning_item_completed(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
+        db = Database(database_url)
+        engine = create_async_engine(database_url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+        thread = FakeThread(1485470675786399764)
+        source_message = FakeMessage(thread, 1485515772351746099, "请继续")
+        control_message = FakeMessage(thread, 2000, "正在调用 Codex...")
+        settings = Settings(discord_bot_token="token")
+        controller = TurnOutputController(
+            settings=settings,
+            turn_output_service=TurnOutputService(db),
+            source_message=source_message,  # type: ignore[arg-type]
+            control_message=control_message,  # type: ignore[arg-type]
+        )
+
+        await controller.bind_turn(codex_thread_id="thr_1", turn_id="turn_1")
+
+        await controller.handle_event(
+            ReasoningSummaryTextDeltaEvent(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                item_id="reasoning_1",
+                summary_index=0,
+                delta="**评估 Git Log 命令**\n\nI",
+            )
+        )
+        assert len(thread.sent_messages) == 1
+        reasoning_message = thread.sent_messages[0]
+        first_render = reasoning_message.content or ""
+
+        # 第二个 delta 在节流窗口内到达，默认不会立即 flush，所以此时消息仍停留在只包含 “I” 的中间态。
+        await controller.handle_event(
+            ReasoningSummaryTextDeltaEvent(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                item_id="reasoning_1",
+                summary_index=0,
+                delta=" am considering using `git log -S`.",
+            )
+        )
+        assert reasoning_message.content == first_render
+
+        # reasoning item/completed 的 summary 是权威最终内容，应覆盖中间态并强制 flush 到 Discord。
+        await controller.handle_event(
+            ItemCompletedEvent(
+                thread_id="thr_1",
+                turn_id="turn_1",
+                item_id="reasoning_1",
+                item_type="reasoning",
+                item={
+                    "id": "reasoning_1",
+                    "type": "reasoning",
+                    "summary": [
+                        "**评估 Git Log 命令**\n\nI'm considering using `git log -S`."
+                    ],
+                    "content": [],
+                },
+            )
+        )
+        updated = reasoning_message.content or ""
+        assert "I'm considering" in updated
+        assert updated != first_render
+
+        await db.close()
+
+    asyncio.run(scenario())
+
+
 def test_turn_output_controller_shows_capacity_hint_when_turn_failed(tmp_path: Path) -> None:
     async def scenario() -> None:
         database_url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
